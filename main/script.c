@@ -25,21 +25,22 @@
 
 EsObject *OPTSCRIPT_ERR_NOTAGENTRY;
 EsObject *OPTSCRIPT_ERR_UNKNOWNLANGUAGE;
+EsObject *OPTSCRIPT_ERR_FIELDRESET;
 
 int OPT_TYPE_MATCHLOC;
-static int locEqual (const void *a, const void  *b);
+static int locEqual (const void *a, const void *b);
 static void locPrint (const void *a, MIO *out);
 
 int OPT_TYPE_TAG;
 static void tagFree (void *a);
-static int tagEqual (const void *a, const void  *b);
+static int tagEqual (const void *a, const void *b);
 static void tagPrint (const void *a, MIO *out);
 
 static void vStringCatToupperS (vString *str, const char *s)
 {
 	for (const char *tmp = s; *tmp != '\0'; tmp++)
 	{
-		int c = toupper (*tmp);
+		int c = toupper ((unsigned char) *tmp);
 		vStringPut (str, c);
 	}
 }
@@ -82,7 +83,7 @@ static EsObject* lrop_get_field_value (OptVM *vm, EsObject *name)
 	int n = es_integer_get (nobj);
 	tagEntryInfo *e = getEntryInCorkQueue (n);
 	if (e == NULL)
-		return OPTSCRIPT_ERR_NOTAGENTRY;;
+		return OPTSCRIPT_ERR_NOTAGENTRY;
 
 	void * data = es_symbol_get_data (name);
 	fieldType ftype = HT_PTR_TO_INT (data);
@@ -119,7 +120,7 @@ static EsObject* lrop_set_field_value (OptVM *vm, EsObject *name)
 	int n = es_integer_get (indexobj);
 	tagEntryInfo *e = getEntryInCorkQueue (n);
 	if (e == NULL)
-		return OPTSCRIPT_ERR_NOTAGENTRY;;
+		return OPTSCRIPT_ERR_NOTAGENTRY;
 
 	void * data = es_symbol_get_data (name);
 	fieldType ftype = HT_PTR_TO_INT (data);
@@ -134,13 +135,13 @@ static EsObject* lrop_set_field_value (OptVM *vm, EsObject *name)
 		if (!es_object_equal (e, es_false))
 			return e;
 	}
-	else
-	{
-		if (! (((fdata_type & FIELDTYPE_STRING) && (valtype == OPT_TYPE_STRING))
-			   || ((fdata_type & FIELDTYPE_BOOL) && (valtype == ES_TYPE_BOOLEAN))
-			   || ((fdata_type & FIELDTYPE_INTEGER) && (valtype == ES_TYPE_INTEGER))))
-			return OPT_ERR_TYPECHECK;
-	}
+	else if ((fdata_type & FIELDTYPE_STRING) && (fdata_type & FIELDTYPE_BOOL)
+			 && ((valtype == OPT_TYPE_STRING) || (valtype == ES_TYPE_BOOLEAN)))
+		;						/* Accept; do nothing */
+	else if (! (((fdata_type & FIELDTYPE_STRING) && (valtype == OPT_TYPE_STRING))
+				|| ((fdata_type & FIELDTYPE_BOOL) && (valtype == ES_TYPE_BOOLEAN))
+				|| ((fdata_type & FIELDTYPE_INTEGER) && (valtype == ES_TYPE_INTEGER))))
+		return OPT_ERR_TYPECHECK;
 
 	EsObject *r = setFieldValue (ftype, e, valobj);
 	if (es_error_p (r))
@@ -152,12 +153,22 @@ static EsObject* lrop_set_field_value (OptVM *vm, EsObject *name)
 	return es_false;
 }
 
-static void optscriptInstallFieldGetter (EsObject *dict, fieldType ftype,
-										 vString *op_name, vString *op_desc)
+static void optscriptInstallFieldGetterFast (EsObject *dict, fieldType ftype,
+											 vString *op_name, vString *op_desc)
 {
-	const char *fname = getFieldName (ftype);
 	vStringPut (op_name, ':');
+
+	langType lang = getFieldLanguage (ftype);
+	if (lang != LANG_IGNORE)
+	{
+		const char *lname = getLanguageName (lang);
+		vStringCatS (op_name, lname);
+		vStringPut (op_name, '.');
+	}
+
+	const char *fname = getFieldName (ftype);
 	vStringCatS (op_name, fname);
+
 	EsObject *op_sym = es_symbol_intern (vStringValue (op_name));
 	es_symbol_set_data (op_sym, HT_INT_TO_PTR (ftype));
 
@@ -198,9 +209,17 @@ static void optscriptInstallFieldGetter (EsObject *dict, fieldType ftype,
 	es_object_unref (op);
 }
 
-static void optscriptInstallFieldSetter (EsObject *dict, fieldType ftype,
-										 vString *op_name, vString *op_desc)
+static void optscriptInstallFieldSetterFast (EsObject *dict, fieldType ftype,
+											 vString *op_name, vString *op_desc)
 {
+	langType lang = getFieldLanguage (ftype);
+	if (lang != LANG_IGNORE)
+	{
+		const char *lname = getLanguageName (lang);
+		vStringCatS (op_name, lname);
+		vStringPut (op_name, '.');
+	}
+
 	const char *fname = getFieldName (ftype);
 	vStringCatS (op_name, fname);
 	vStringPut (op_name, ':');
@@ -210,7 +229,7 @@ static void optscriptInstallFieldSetter (EsObject *dict, fieldType ftype,
 
 	const char *vtype = getFieldSetterValueType (ftype);
 	unsigned int fdata_type = getFieldDataType (ftype);
-	vStringCatS (op_desc, "int ");
+	vStringCatS (op_desc, "tag:int ");
 
 	if (vtype)
 		vStringCatS (op_desc, vtype);
@@ -237,22 +256,46 @@ static void optscriptInstallFieldSetter (EsObject *dict, fieldType ftype,
 	es_object_unref (op);
 }
 
+extern void optscriptInstallFieldAccessor (EsObject *dict, fieldType ftype)
+{
+	vString *op_name = vStringNew ();
+	vString *op_desc = vStringNew ();
+
+	if (hasFieldGetter (ftype))
+	{
+		optscriptInstallFieldGetterFast (dict, ftype, op_name, op_desc);
+		vStringClear (op_name);
+		vStringClear (op_desc);
+	}
+
+	if (hasFieldSetter (ftype))
+		optscriptInstallFieldSetterFast (dict, ftype, op_name, op_desc);
+
+	vStringDelete (op_name);
+	vStringDelete (op_desc);
+}
+
 static void optscriptInstallFieldAccessors (EsObject *dict)
 {
 	vString *op_name = vStringNew ();
 	vString *op_desc = vStringNew ();
 
+	/* In the current implementation, the upper boundary of the loop
+	   can be "<= FIELD_BUILTIN_LAST" because the parser specific fields
+	   are registered via defineField. However, when we change the order
+	   and the way to initialize parsers, we may have to use "< countFields()"
+	   instead. */
 	for (fieldType ftype = 0; ftype <= FIELD_BUILTIN_LAST; ftype++)
 	{
 		if (hasFieldGetter (ftype))
 		{
-			optscriptInstallFieldGetter (dict, ftype, op_name, op_desc);
+			optscriptInstallFieldGetterFast (dict, ftype, op_name, op_desc);
 			vStringClear (op_name);
 			vStringClear (op_desc);
 		}
 		if (hasFieldSetter (ftype))
 		{
-			optscriptInstallFieldSetter (dict, ftype, op_name, op_desc);
+			optscriptInstallFieldSetterFast (dict, ftype, op_name, op_desc);
 			vStringClear (op_name);
 			vStringClear (op_desc);
 		}
@@ -349,7 +392,7 @@ extern EsObject* optscriptEval (OptVM *vm, EsObject *code)
 	}
 	es_object_unref (o);
 
-	EsObject *r = opt_vm_eval (vm, exec);;
+	EsObject *r = opt_vm_eval (vm, exec);
 	if (es_error_p (r))
 		opt_vm_report_error (vm, r, NULL);
 	return r;
@@ -451,7 +494,7 @@ extern void optscriptHelp (OptVM *vm, FILE *fp, EsObject *procdocs)
 	mio_unref (out);
 }
 
-static int locEqual (const void *a, const void  *b)
+static int locEqual (const void *a, const void *b)
 {
 	if (a == b)
 		return 1;
@@ -478,7 +521,7 @@ static void tagFree (void *a)
 	eFree (e);
 }
 
-static int tagEqual (const void *a, const void  *b)
+static int tagEqual (const void *a, const void *b)
 {
 	if (a == b)
 		return 1;

@@ -1,0 +1,77 @@
+name: run units target on Ubuntu
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  testing:
+
+    strategy:
+      matrix:
+        os: [ubuntu-26.04, ubuntu-24.04, ubuntu-22.04]
+        compiler: [gcc, clang]
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+
+      CC: ${{ matrix.compiler }}
+
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - run: sudo apt-get -y -o APT::Immediate-Configure=false update
+    - run: sudo apt-get -y -o APT::Immediate-Configure=false install pkg-config automake ${{ matrix.compiler }} gdb bash python3-docutils libseccomp-dev libjansson-dev libyaml-dev libxml2-dev libpcre2-dev
+
+    # valgrind doesn't work well with an executable built with clang 14.
+    # https://forum.manjaro.org/t/valgrind-fails-possibly-corrupted-debuginfo-file/118156
+    - if: matrix.compiler == 'clang' && matrix.os == 'ubuntu-22.04'
+      run: |
+        type clang > /dev/null && clang --version | head -1 | grep -q 14 \
+        || sudo apt-get -y -o APT::Immediate-Configure=false install valgrind
+
+    - run: ${{ matrix.compiler }} --version
+    - run: make --version
+
+    - run: ./autogen.sh
+
+    - run: mkdir -p build.d
+
+    - run: cd build.d && ../configure --enable-debugging --enable-iconv
+
+    - run: make -C build.d -j2
+
+    - run: cd build.d && ./ctags --list-features
+    - run: cd build.d && ./ctags --help
+    - run: cd build.d && ./ctags --version
+
+    - run: make -C build.d check
+    - run: make -C build.d roundtrip
+    - run: make -C build.d dist
+
+    #############################################################################
+
+    - run: mkdir -p dist-src
+
+    - run: tar xf build.d/universal-ctags*tar.gz -C dist-src --strip-components=1
+
+    - run: mkdir -p build2.d
+
+    - run: cd build2.d && ../dist-src/configure --enable-debugging
+
+    - run: cd build2.d && make -j2
+
+    - run: cd build2.d && ./ctags --list-features
+    - run: cd build2.d && ./ctags --help
+    - run: cd build2.d && ./ctags --version
+
+      # Our sandbox doesn't work with gcov.
+      # Following cases target ctags without gcov.
+    - run: cd build2.d && make tmain UNITS=sandbox,sandbox-crash,sandbox-default-req,sandbox-unknown-submode
+    - run: cd build2.d && make clean

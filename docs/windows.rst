@@ -18,7 +18,7 @@ Microsoft Visual Studio
 .............................................................................
 https://www.visualstudio.com/
 
-Obviously there is Microsoft Visual Studio 2013. Many professional developers targeting Windows use Visual Studio. Visual Studio comes in a couple of different editions. Their Express and Community editions are free to use, but a Microsoft-account is required to download the .iso and when you want to continue using it after a 30-days trial period. Other editions of Visual Studio must be purchased.
+Many professional developers targeting Windows use Visual Studio. Visual Studio comes in a couple of different editions. Their Express and Community editions are free to use, but a Microsoft-account is required to download the .iso and when you want to continue using it after a 30-days trial period. Other editions of Visual Studio must be purchased.
 
 Installing Visual Studio will give you the IDE, the command line compilers and the MS-version of make named nmake.
 
@@ -28,13 +28,17 @@ Note that ctags cannot be built with Visual Studio older than 2013 anymore. Ther
 GCC
 .............................................................................
 
-There are three flavors of GCC for Windows:
+You can use `MinGW-w64 <https://www.mingw-w64.org/>`_ to build ctags. There are several ways to install MinGW-w64 in Windows.
 
-- MinGW http://www.mingw.org
-- MinGW-w64 http://mingw-w64.sourceforge.net
-- TDM-GCC http://tdm-gcc.tdragon.net
+- MSYS2 https://www.msys2.org/
+- MinGW-w64 - for 32 and 64 bit Windows https://sourceforge.net/projects/mingw-w64/
+- TDM-GCC https://jmeubank.github.io/tdm-gcc/
 
-MinGW started it all, but development stalled for a while and no x64 was available. Then the MinGW-w64 fork emerged. It started as a 64-bit compiler, but soon they included both a 32-bit and a 64-bit compiler. But the name remained, a bit confusing. Another fork of MinGW is TDM-GCC. It also provides both 32-bit and 64-bit compilers. All have at least GCC 4.8. MinGW-w64 appears to be the most used flavor of MinGW at this moment. Many well known programs that originate from GNU/Linux use MinGW-w64 to compile their Windows port.
+If you want to build a full-featured version, use MSYS2 (with Autotools). Otherwise, you can also use the other two distributions.
+
+**History**
+
+MinGW started it all, but development stalled for a while and no x64 was available. Then the MinGW-w64 fork emerged. It started as a 64-bit compiler, but soon they included both a 32-bit and a 64-bit compiler. But the name remained, a bit confusing. MinGW-w64 appears to be the most used flavor of MinGW at this moment. Many well known programs that originate from GNU/Linux use MinGW-w64 to compile their Windows port.
 
 Building ctags from the command line
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -42,7 +46,48 @@ Building ctags from the command line
 Microsoft Visual Studio
 .............................................................................
 
-Most users of Visual Studio will use the IDE and not the command line to compile a project. But by default a shortcut to the command prompt that sets the proper path is installed in the Start Menu. When this command prompt is used ``nmake -f mk_mvc.mak`` will compile ctags. You can also go into the ``win32`` subdirectory and run ``msbuild ctags_vs2013.sln`` for the default build. Use ``msbuild ctags_vs2013.sln /p:Configuration=Release`` to specifically build a release build. MSBuild is what the IDE uses internally and therefore will produce the same files as the IDE.
+Microsoft Visual Studio provides ``Visual Studio Developer Command Prompt`` for command-line enthusiasts.
+
+There are two ways to setup ``Visual Studio Developer Command Prompt``.
+
+The first way to setup ``Visual Studio Developer Command Prompt`` is by clicking the ``Windows Start Menu``, details please refer to https://learn.microsoft.com/en-us/visualstudio/ide/reference/command-prompt-powershell?view=vs-2019
+
+The second way to setup ``Visual Studio Developer Command Prompt`` is opening ``Command Prompt`` Application and calling ``vcvarsall.bat`` in current ``Command Prompt``.
+
+The location of ``vcvarsall.bat`` is various for different Microsoft Visual Studio versions and editions.
+
+For Microsoft Visual Studio 2022 Enterprise::
+
+        C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+For Microsoft Visual Studio 2022 Community::
+
+        C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat
+
+For Microsoft Visual Studio 2019 Enterprise::
+
+        C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat
+
+For Microsoft Visual Studio 2019 Community::
+
+        C:\Program Files (x86)\Microsoft Visual Studio\2019\Community\VC\Auxiliary\Build\vcvarsall.bat
+
+Following is an example shows you how to use ``vcvarsall.bat`` to setup ``Visual Studio Developer Command Prompt``::
+
+        call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+
+For more details about ``vcvarsall.bat`` please refer to https://learn.microsoft.com/en-us/cpp/build/building-on-the-command-line?view=msvc-160
+
+Once ``Visual Studio Developer Command Prompt`` is setup, you can build ctags with ``NMake`` or ``MSBuild``.
+
+Building ctags with NMake
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This requires Microsoft Visual Studio 2019 or later.
+
+The simplest build instructions like below::
+
+        nmake -f mk_mvc.mak
 
 If you want to build an iconv enabled version, you must specify ``WITH_ICONV=yes`` and ``ICONV_DIR`` like below::
 
@@ -56,6 +101,29 @@ If you want to create PDB files for debugging even for a release version, you mu
 
         nmake -f mk_mvc.mak PDB=1
 
+Building ctags with MSBuild
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This supports only Microsoft Visual Studio 2013.
+
+Before starting to build, you need to copy some files to proper location::
+
+        copy win32\config_mvc.h config.h
+        copy win32\gnulib_h\langinfo.h gnulib
+        copy win32\gnulib_h\fnmatch.h gnulib
+
+The simplest build instruction like below::
+
+        msbuild win32\ctags_vs2013.sln
+
+If you want to build a release version, run command like below::
+
+        msbuild win32\ctags_vs2013.sln /p:Configuration=Release
+
+MSBuild is what the IDE uses internally and therefore will produce the same files as the IDE.
+
+For more information about MSBuild, please refer to https://learn.microsoft.com/en-us/visualstudio/msbuild/msbuild?view=vs-2019
+
 GCC
 .............................................................................
 
@@ -67,30 +135,13 @@ GNU Make builds for Win32 are available as well, and sometimes are included with
 
 Native win32 versions of the GNU/Linux commands cp, rm and mv can be useful. rm is almost always used in by the ``clean`` target of a makefile.
 
+**MSYS2**
 
-**CMD**
-
-Any Windows includes a command prompt. Not the most advanced, but it is enough to do the build tasks. Make sure the path is set properly and ``make -f mk_mingw.mak`` should do the trick.
-
-If you want to build an iconv enabled version, you must specify ``WITH_ICONV=yes`` like below::
-
-        make -f mk_mingw.mak WITH_ICONV=yes
-
-If you want to build a debug version, you must specify ``DEBUG=1`` like below::
-
-        make -f mk_mingw.mak DEBUG=1
-
-**MSYS / MSYS2**
-
-From their site: MSYS is a collection of GNU utilities such as bash, make, gawk and grep to allow building of applications and programs which depend on traditional UNIX tools to be present. It is intended to supplement MinGW and the deficiencies of the cmd shell.
-
-MSYS comes in two flavors; the original from MinGW and MSYS2.
-See https://www.msys2.org/ about MSYS2.
-
-MSYS is old but still works. You can build ctags with it using ``make -f mk_mingw.mak``. The Autotools are too old on MSYS so you cannot use them.
+From mingw.org: MSYS is a collection of GNU utilities such as bash, make, gawk and grep to allow building of applications and programs which depend on traditional UNIX tools to be present. It is intended to supplement MinGW and the deficiencies of the cmd shell.
 
 MSYS2 is a more maintained version of MSYS, but specially geared towards MinGW-w64. You can also use Autotools to build ctags.
 If you use Autotools you can enable parsers which require jansson, libxml2 or libyaml, and can also do the Units testing with ``make units``.
+If you don't need such features, you can still build ctags without using Autotools: ``make -f mk_mingw.mak``.
 
 The following packages are needed to build a full-featured version:
 
@@ -146,7 +197,7 @@ All major distributions have both MinGW and MinGW-w64 packages. Cross-compiling 
 Building ctags with IDEs
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-I have no idea how things work for most GNU/Linux developers, but most Windows developers are used to IDEs. Not many use a command prompt and running the debugger from the command line is not a thing a Windows developers would normally do. Many IDEs exist for Windows, I use the two below.
+I have no idea how things work for the most GNU/Linux developers, but most of Windows developers prefer to use IDE over command prompt, running the debugger from the command line is not a thing a Windows developers would normally do. Many IDEs exist for Windows, I use the two below.
 
 Microsoft Visual Studio
 .............................................................................

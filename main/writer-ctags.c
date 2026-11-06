@@ -21,6 +21,7 @@
 #include "xtag.h"
 #include "xtag_p.h"
 
+#include <string.h>
 
 #define CTAGS_FILE  "tags"
 
@@ -37,15 +38,16 @@ static int writeCtagsPtagEntry (tagWriter *writer CTAGS_ATTR_UNUSED,
 static bool treatFieldAsFixed (int fieldType);
 static void checkCtagsOptions (tagWriter *writer, bool fieldsWereReset);
 
-#ifdef WIN32
+#ifdef _WIN32
 static enum filenameSepOp overrideFilenameSeparator (enum filenameSepOp currentSetting);
-#endif	/* WIN32 */
+#endif	/* _WIN32 */
 
 struct rejection {
 	bool rejectionInThisInput;
 };
 
 tagWriter uCtagsWriter = {
+	.oformat = "u-ctags",
 	.writeEntry = writeCtagsEntry,
 	.writePtagEntry = writeCtagsPtagEntry,
 	.printPtagByDefault = true,
@@ -54,7 +56,8 @@ tagWriter uCtagsWriter = {
 	.rescanFailedEntry = NULL,
 	.treatFieldAsFixed = treatFieldAsFixed,
 	.checkOptions = checkCtagsOptions,
-#ifdef WIN32
+	.canPrintNullTag = false,
+#ifdef _WIN32
 	.overrideFilenameSeparator = overrideFilenameSeparator,
 #endif
 	.defaultFileName = CTAGS_FILE,
@@ -77,7 +80,7 @@ static bool endECTagsFile (tagWriter *writer, MIO * mio CTAGS_ATTR_UNUSED, const
 	return rej->rejectionInThisInput;
 }
 
-#ifdef WIN32
+#ifdef _WIN32
 static enum filenameSepOp overrideFilenameSeparator (enum filenameSepOp currentSetting)
 {
 	if (currentSetting == FILENAME_SEP_UNSET)
@@ -87,6 +90,7 @@ static enum filenameSepOp overrideFilenameSeparator (enum filenameSepOp currentS
 #endif
 
 tagWriter eCtagsWriter = {
+	.oformat = "e-ctags",
 	.writeEntry = writeCtagsEntry,
 	.writePtagEntry = writeCtagsPtagEntry,
 	.printPtagByDefault = true,
@@ -94,8 +98,9 @@ tagWriter eCtagsWriter = {
 	.postWriteEntry = endECTagsFile,
 	.rescanFailedEntry = NULL,
 	.treatFieldAsFixed = treatFieldAsFixed,
-	.defaultFileName = CTAGS_FILE,
 	.checkOptions = checkCtagsOptions,
+	.canPrintNullTag = false,
+	.defaultFileName = CTAGS_FILE,
 };
 
 static bool hasTagEntryTabOrNewlineChar (const tagEntryInfo * const tag)
@@ -208,9 +213,31 @@ static int addParserFields (tagWriter *writer, MIO * mio, const tagEntryInfo *co
 		if (! isFieldEnabled (ftype))
 			continue;
 
+		unsigned int dt = getFieldDataType (ftype);
+		const char *val;
+
+		if (dt & FIELDTYPE_STRING)
+			val = escapeFieldValueFull (writer, tag, ftype, i);
+		else if (dt & FIELDTYPE_BOOL)
+			val = "";
+		else if (dt & FIELDTYPE_INTEGER)
+		{
+			long tmp;
+
+			val = escapeFieldValueFull (writer, tag, ftype, i);
+			if (!strToLong (val, 10, &tmp))
+				val = (val[0] == '\0')? "0": "1";
+		}
+		else
+		{
+			/* Not implemented */
+			AssertNotReached ();
+			val = "CTAGS INTERNAL BUG!";
+		}
+
+
 		length += mio_printf(mio, "\t%s:%s",
-							 getFieldName (ftype),
-							 escapeFieldValueFull (writer, tag, ftype, i));
+							 getFieldName (ftype), val);
 	}
 	return length;
 }
@@ -244,7 +271,7 @@ static int addExtensionFields (tagWriter *writer, MIO *mio, const tagEntryInfo *
 	char sep [] = {';', '"', '\0'};
 	int length = 0;
 
-	const char *str = NULL;;
+	const char *str = NULL;
 	kindDefinition *kdef = getLanguageKind(tag->langType, tag->kindIndex);
 	const char kind_letter_str[2] = {kdef->letter, '\0'};
 
@@ -305,15 +332,10 @@ static int addExtensionFields (tagWriter *writer, MIO *mio, const tagEntryInfo *
 		sep [0] = '\0';
 	}
 
-	length += renderExtensionFieldMaybe (writer, FIELD_INHERITANCE, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_ACCESS, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_IMPLEMENTATION, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_SIGNATURE, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_ROLES, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_EXTRAS, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_XPATH, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_END_LINE, tag, sep, mio);
-	length += renderExtensionFieldMaybe (writer, FIELD_EPOCH, tag, sep, mio);
+	for (int k = FIELD_ECTAGS_LOOP_START; k <= FIELD_ECTAGS_LOOP_LAST; k++)
+		length += renderExtensionFieldMaybe (writer, k, tag, sep, mio);
+	for (int k = FIELD_UCTAGS_LOOP_START; k <= FIELD_BUILTIN_LAST; k++)
+		length += renderExtensionFieldMaybe (writer, k, tag, sep, mio);
 
 	return length;
 }
@@ -361,7 +383,7 @@ static int writeCtagsEntry (tagWriter *writer,
 	return length;
 }
 
-static int writeCtagsPtagEntry (tagWriter *writer CTAGS_ATTR_UNUSED,
+static int writeCtagsPtagEntry (tagWriter *writer,
 				MIO * mio, const ptagDesc *desc,
 				const char *const fileName,
 				const char *const pattern,
@@ -375,18 +397,74 @@ static int writeCtagsPtagEntry (tagWriter *writer CTAGS_ATTR_UNUSED,
 	const char *fieldx = extras? getFieldName (FIELD_EXTRAS): "";
 	const char *xptag = extras? getXtagName (XTAG_PSEUDO_TAGS): "";
 
-	return parserName
+	/* Escaping:
+	 *
+	 * NAME:
+	 *    Defined in ctags. As far as we give a good pseudo tag name,
+	 *    we can print the name as is.
+	 *
+	 * parserName:
+	 *    This can be a part of NAME. An optlib can give a
+	 *    parserName but the characters that can be used in the name are
+	 *    limited in [a-zA-Z0-9+#]. We can print the name as is.
+	 *
+	 * fileName:
+	 *    Any characters can be used. Escaping is needed.
+	 *
+	 * pattern:
+	 *    Any characters can be used. Escaping is needed always.
+	 *
+	 * fieldx:
+	 *    No escaping is needed.
+	 *
+	 * xptag:
+	 *    No escaping is needed.
+	 *
+	 */
 
-#define OPT(X) ((X)?(X):"")
+	vString *vfileName = vStringNew ();
+	if (writer->type == WRITER_U_CTAGS
+#ifdef _WIN32
+		&& getFilenameSeparator(Option.useSlashAsFilenameSeparator) == FILENAME_SEP_USE_SLASH
+#endif
+		)
+	{
+		if (fileName)
+			vStringCatSWithEscaping (vfileName, fileName);
+	}
+	else if (fileName)
+	{
+		const char *c = NULL;
+		if ((c = strchr (fileName, '\t')) || (c = strchr (fileName, '\n')))
+		{
+			vStringDelete (vfileName);
+			error (WARNING, "skip printing %s%s pseudo tag; the input field of the pseudo tag includes a %s character: %s",
+				   PSEUDO_TAG_PREFIX, desc->name,
+				   *c == '\t'? "tab": "newline",
+				   fileName);
+			return 0;
+		}
+		vStringCatS (vfileName, fileName);
+	}
+
+	vString *vpattern = vStringNew ();
+	if (pattern)
+		vStringCatSWithEscapingAsPattern (vpattern, pattern);
+
+	int r = parserName
 		? mio_printf (mio, "%s%s%s%s\t%s\t/%s/%s%s%s%s\n",
 			      PSEUDO_TAG_PREFIX, desc->name, PSEUDO_TAG_SEPARATOR, parserName,
-			      OPT(fileName), OPT(pattern),
+			      vStringValue (vfileName), vStringValue (vpattern),
 				  xsep, fieldx, fsep, xptag)
 		: mio_printf (mio, "%s%s\t%s\t/%s/%s%s%s%s\n",
 			      PSEUDO_TAG_PREFIX, desc->name,
-			      OPT(fileName), OPT(pattern),
+			      vStringValue (vfileName), vStringValue (vpattern),
 			      xsep, fieldx, fsep, xptag);
-#undef OPT
+
+	vStringDelete (vpattern);
+	vStringDelete (vfileName);
+
+	return r;
 }
 
 static fieldType fixedFields [] = {

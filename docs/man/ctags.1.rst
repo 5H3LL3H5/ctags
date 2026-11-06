@@ -6,7 +6,7 @@ ctags
 
 Generate tag files for source code
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 1
 
@@ -148,7 +148,7 @@ are not listed here. They are experimental or for debugging purpose.
 
 Notation: ``<foo>`` is for a variable string ``foo``, ``[ ... ]`` for optional,
 ``|`` for selection, and ``( ... )`` for grouping.  For example
-``--foo[=(yes|no)]'' means ``--foo``, ``-foo=yes``, or ``-foo=no``.
+``--foo[=(yes|no)]`` means ``--foo``, ``--foo=yes``, or ``--foo=no``.
 
 .. _option_input_output_file:
 
@@ -309,10 +309,16 @@ Output Format Options
 ``--output-format=(u-ctags|e-ctags|etags|xref|json)``
 	Specify the output format. The default is ``u-ctags``.
 	See :ref:`tags(5) <tags(5)>` for ``u-ctags`` and ``e-ctags``.
+	``TAG_OUTPUT_MODE`` pseudo tag indicates the choice,
+	``u-ctags`` or ``e-ctags``. See :ref:`ctags-client-tools(7) <ctags-client-tools(7)>`
+	for more about the pseudo tag.
+
 	See ``-e`` for ``etags``, and ``-x`` for ``xref``.
 	``json`` format is available only if
 	the ctags executable is built with ``libjansson``.
-	See :ref:`ctags-client-tools(7) <ctags-client-tools(7)>` for more about ``json`` format.
+	See :ref:`ctags-json-output(5) <ctags-json-output(5)>` for more about ``json`` format.
+
+	See also ``--list-output-formats``.
 
 ``-e``
 	Same as ``--output-format=etags``.
@@ -464,9 +470,10 @@ Language Selection and Mapping Options
 	feature list; otherwise, the file name patterns are matched against
 	file names using a simple textual comparison.
 
-	When mapping a file extension with ``--langmap`` option,
-	it will first be unmapped from any other languages. (``--map-<LANG>``
-	option provides more fine-grained control.)
+	When mapping a file extension or a file name pattern with
+	``--langmap`` option, it will first be unmapped from any other
+	languages. (``--map-<LANG>`` option provides more fine-grained
+	control.)
 
 	If the first character in a *<map>* is a plus sign ('``+``'), then the extensions and
 	file name patterns in that map will be appended to the current map
@@ -492,26 +499,71 @@ Language Selection and Mapping Options
 	Exuberant Ctags. See :ref:`ctags-incompatibilities(7) <ctags-incompatibilities(7)>` for the background of
 	this incompatible change.
 
-``--map-<LANG>=[+|-]<extension>|<pattern>``
+	Unlike ``--map-<LANG>`` option, you cannot specify relative-path regular
+	 expressions to ``--langmap`` option.
+
+``--map-<LANG>=[+|-]<extension>|<pattern>|<rexpr>``
 	This option provides the way to control mapping(s) of file names to
 	languages in a more fine-grained way than ``--langmap`` option.
 
 	In ctags, more than one language can map to a
-	file name *<pattern>* or file *<extension>* (*N:1 map*). Alternatively,
-	``--langmap`` option handle only *1:1 map*, only one language
-	mapping to one file name *<pattern>* or file *<extension>*.  A typical N:1
-	map is seen in C++ and ObjectiveC language; both languages have
-	a map to ``.h`` as a file extension.
+	relative-path regular expression (*<rexpr>*), file name *<pattern>*, or
+	file *<extension>* (*N:1 map*). Alternatively, ``--langmap``
+	option handle only *1:1 map*, only one language mapping to one
+	file name *<pattern>* or file *<extension>*.  A typical N:1 map is
+	seen in C++ and ObjectiveC language; both languages have a map to
+	``.h`` as a file extension.
 
-	A file extension is specified by preceding the extension with a period (e.g. ``.c``).
-	A file name pattern is specified by enclosing the pattern in parentheses (e.g.
-	``([Mm]akefile)``). A prefixed plus ('``+``') sign is for adding, and
+	A file extension is specified by preceding the extension with a period
+	(e.g. ``.c``).  A file name pattern is specified by enclosing the pattern in
+	parentheses (e.g.  ``([Mm]akefile)``). A relative-path regular expression is
+	specified by enclosing the expressions in percent signs '``%``'
+	(e.g. ``%include/.*\.h%``). To include a literal percent sign
+	inside the regular expression, escape it as ``\%``.
+
+	A prefixed plus ('``+``') sign is for adding, and
 	minus ('``-``') is for removing. No prefix means replacing the map of *<LANG>*.
 
-	Unlike ``--langmap``, *<extension>* (or *<pattern>*) is not a list.
-	``--map-<LANG>`` takes one extension (or pattern). However,
-	the option can be specified with different arguments multiple times
-	in a command line.
+	Unlike ``--langmap``, ``--map-<LANG>`` does not take a list; ``--map-<LANG>``
+	takes one extension, one pattern, or one regular expression. However, the
+	option can be specified with different arguments multiple times in a command
+	line.
+
+	For file extensions and file name patterns, the match is performed
+	with a base file name, a file without any directory components.
+	For relative-path regular expressions, the match is performed with
+	a relative-path incorporating the directory components. A
+	relative-path is relative to the directory where ctags launches.
+
+	Assume your shell is in ``/project/x`` directory and you have the following
+	source tree under the directory.
+
+	.. code-block::
+
+		src
+		└── lib
+		    ├── data.c
+		    └── logic.c
+
+	If you run ctags with ``ctags -R src``,
+	the match is performed with ``src/lib/data.c`` and ``src/lib/logic.c`` If you
+	give ``--map-YourParser='%src/lib/.*\.c%'``, ctags
+	chooses ``YourParser`` parser for processing ``data.c`` and ``logic.c`` in the
+	tree.
+
+	If your shell is in ``/project/x/src`` and you run
+	``ctags -R lib``, ctags may not choose
+	``YourParser`` because the match is performed with ``lib/data.c`` and
+	``lib/logic.c``.
+
+	A relative-path regular expression can take a flag controlling its testing.
+	The flag comes after the last percent sign. Currently only one available flag:
+
+	``{icase}`` (one-letter form '``i``')
+		The regular expression is to be applied in a case-insensitive
+		manner. (e.g. ``%include/.*\.h%i`` or ``%include/.*\.h%{icase}``
+
+	The relative-path regular expression is available since version 6.3.0.
 
 .. _option_tags_file_contents:
 
@@ -563,11 +615,15 @@ See "`TAG ENTRIES`_" about fields, kinds, roles, and extras.
 		removed since the tag file was generated.
 
 	``mixed``
-		In this mode, patterns are generally used with a few exceptions.
-		For C, line numbers are used for macro definition tags. For Fortran, line numbers
+		In this mode, patterns are generally used with an exceptions.
+		For Fortran, line numbers
 		are used for common blocks because their corresponding source lines
 		are generally identical, making pattern searches useless
 		for finding all matches.
+
+		Exuberant Ctags has one more exception; for C, line numbers are used
+		for macro definition tags. Universal Ctags doesn't have this exception
+		for C.
 
 		This was the default format generated by the original ctags and is,
 		therefore, retained as the default for this option.
@@ -684,7 +740,7 @@ See "`TAG ENTRIES`_" about fields, kinds, roles, and extras.
 	description of ``MASTER`` column of ``--list-kinds-full``.
 
 ..	COMMENT:
-	``--param-<LANG>:name=argument`` is moved to "Language Specific Options"
+	``--param-<LANG>.name=argument`` is moved to "Language Specific Options"
 
 ``--pattern-length-limit=<N>``
 	Truncate patterns of tag entries after *<N>* characters. Disable by setting to 0
@@ -735,7 +791,7 @@ See "`TAG ENTRIES`_" about fields, kinds, roles, and extras.
 	In the above example, the prefix is put to ``end`` field which is
 	newly introduced in Universal Ctags.
 
-``--roles-(<LANG>|all).(<kind>|all)=[+|-][<roles>|*]``
+``--roles-(<LANG>|all).(<kind>|*)=[+|-][<roles>|*]``
 	Specifies a list of kind-specific roles of tags to include in the
 	output file for a particular language.
 	*<kind>* specifies the kind where the *<roles>* are defined.
@@ -789,6 +845,9 @@ See "`TAG ENTRIES`_" about fields, kinds, roles, and extras.
 	The default is ``yes`` for the default "u-ctags" output format, and
 	``no`` for the other formats.
 
+	``TAG_OUTPUT_FILESEP`` pseudo tag is for representing  the choice of
+	filename separators with this option. See also :ref:`ctags-client-tools(7) <ctags-client-tools(7)>`.
+
 	This option is available on MS Windows only.
 
 ``-B``
@@ -826,7 +885,7 @@ Option File Options
 
 ``--optlib-dir=[+]<directory>``
 	Add an optlib *<directory>* to or reset the optlib path list.
-	By default, the optlib path list is empty.
+	See "`Default optlib path list`_" about the default elements for optlib path list.
 
 optlib Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -993,7 +1052,7 @@ Language Specific Options
 	would cause the source file to be incorrectly parsed. Correct behavior
 	can be restored by specifying "``-I CLASS=class``".
 
-``--param-<LANG>:<name>=<argument>``
+``--param-<LANG>.<name>=<argument>``
 	Set a *<LANG>* specific parameter, a parameter specific to the *<LANG>*.
 
 	Available parameters can be listed with ``--list-params``.
@@ -1012,9 +1071,11 @@ Listing Options
 ``--list-excludes``
 	Lists the current exclusion patterns used to exclude files.
 
-``--list-extras[=(<language>|all)]``
+``--list-extras[=(<language>|NONE|all)]``
 	Lists the extras recognized for either the specified *<language>* or
-	``all`` languages. See "`Extras`_" subsection to know what are extras.
+	``all`` languages. If ``NONE`` is specified, it lists only extras
+	common in all languages.
+	See "`Extras`_" subsection to know what are extras.
 	``all`` is used as default value if the option argument is omitted.
 
 	An extra can be enabled or disabled with ``--extras=`` for common
@@ -1037,15 +1098,26 @@ Listing Options
 		The name of language if the extra is owned by a parser.
 		``NONE`` means the extra is common in parsers.
 
+	VER
+		The ctags output version introducing the extra for a language-independent
+		extra, or the parser version introducing the extra for a
+		language-specified extra. See the ``--version`` option and
+		``TAG_OUTPUT_VERSION`` in :ref:`ctags-client-tools(7) <ctags-client-tools(7)>` about the ctags output
+		version.
+
+		(since version 6.3.0)
+
 	DESCRIPTION
 		Human readable description for the extra.
 
 ``--list-features``
 	Lists the compiled features.
 
-``--list-fields[=(<language>|all)]``
+``--list-fields[=(<language>|NONE|all)]``
 	Lists the fields recognized for either the specified *<language>* or
-	``all`` languages. See "`Extension fields`_" subsection to know what are fields.
+	``all`` languages. If ``NONE`` is specified, it lists only fields
+	common in all languages.
+	See "`Extension fields`_" subsection to know what are fields.
 	``all`` is used as default value if the option argument is omitted.
 
 	The meaning of columns are as follows:
@@ -1081,6 +1153,14 @@ Listing Options
 		How this field can be accessed from optscript code.
 		This field is for Universal Ctags developers.
 
+	VER
+		The ctags output version introducing the field for a language-independent
+		field, or the parser version introducing the field for a
+		language-specified field. See the ``--version`` option and
+		``TAG_OUTPUT_VERSION`` in :ref:`ctags-client-tools(7) <ctags-client-tools(7)>` about the ctags output
+		version.
+
+		(since version 6.3.0)
 
 	DESCRIPTION
 		Human readable description for the field.
@@ -1175,6 +1255,11 @@ Listing Options
 
 		.. TODO: need a reference to "master parser"
 
+	VER
+		The parser version introducing the kind.
+
+		(since version 6.3.0)
+
 	DESCRIPTION
 		Human readable description for the kind.
 
@@ -1203,14 +1288,24 @@ Listing Options
 	languages, and then exits.
 	``all`` is used as default value if the option argument is omitted.
 
-``--list-maps[=(<language>|all)]``
-	Lists file name patterns and the file extensions which associate a file
+``--list-map-rexprs[=(<language>|all)]``
+	Lists the relative-path regular expressions which associate a file
 	name with a language for either the specified *<language>* or ``all``
 	languages, and then exits.
 	``all`` is used as default value if the option argument is omitted.
 
-	To list the file extensions or file name patterns individually, use
-	``--list-map-extensions`` or ``--list-map-patterns`` option.
+	(since version 6.3.0)
+
+``--list-maps[=(<language>|all)]``
+	Lists the file name patterns, the file extensions, and the relative-path
+	regular expressions which associate a file name with a language for either
+	the specified *<language>* or ``all`` languages, and then exits.
+	``all`` is used as default value if the option argument is omitted.
+
+	To list the file extensions, file name patterns, or relative-path regular
+	expressions individually, use ``--list-map-extensions``,
+	``--list-map-patterns``, or ``--list-map-rexprs`` option.
+
 	See the ``--langmap`` option, and "`Determining file language`_", above.
 
 	This option does not work with ``--machinable`` nor
@@ -1220,6 +1315,14 @@ Listing Options
 	Output list of flags which can be used in a multiline regex parser
 	definition.
 	See :ref:`ctags-optlib(7) <ctags-optlib(7)>`.
+
+``--list-output-formats``
+	Lists the output formats that can be used in ``--output-format`` option.
+
+	``NULLTAG`` column represents whether the format supports *null tags* or
+	not. See ``nulltag``/``z`` in "`Extras`_" about the null tags.
+
+	(since version 6.2.0)
 
 ``--list-params[=(<language>|all)]``
 	Lists the parameters for either the specified *<language>* or ``all``
@@ -1256,6 +1359,11 @@ Listing Options
 	ENABLED
 		Whether the kind is enabled or not. It takes ``yes`` or ``no``.
 
+	VER
+		The parser version introducing the role.
+
+		(since version 6.3.0)
+
 	DESCRIPTION
 		Human readable description for the role.
 
@@ -1277,6 +1385,11 @@ Listing Options
 
 Miscellaneous Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``--describe-language=<language>``
+	Prints the various aspects of the parser implementing the language.
+
+	(since version 6.3.0)
 
 ``--help``
 	Prints to standard output a detailed usage description, and then exits.
@@ -1319,10 +1432,17 @@ Miscellaneous Options
 ``-V``
 	Equivalent to ``--verbose``.
 
-``--version``
+``--version[=<language>|NONE]``
 	Prints a version identifier for ctags to standard
 	output, and then exits. This is guaranteed to always contain the string
-	"Universal Ctags".
+	"Universal Ctags". See also the description for ``TAG_PROGRAM_VERSION``
+	and ``TAG_OUTPUT_VERSION`` in :ref:`ctags-client-tools(7) <ctags-client-tools(7)>`.
+
+	If ``NONE`` is given, prints the version identifier in a simplified way.
+
+	If *<language>* is given, print the version identifier for the parser
+	for *<language>*. See also the description for ``TAG_PARSER_VERSION`` in
+	:ref:`ctags-client-tools(7) <ctags-client-tools(7)>`.
 
 Obsoleted Options
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1442,9 +1562,12 @@ are mapped to C++, C and ObjectiveC. These mappings can cause
 issues. ctags tries to select the proper parser
 for the source file by applying heuristics to its content, however
 it is not perfect.  In case of issues one can use ``--language-force=<language>``,
-``--langmap=<map>[,<map>[...]]``, or the ``--map-<LANG>=[+|-]<extension>|<pattern>``
+``--langmap=<map>[,<map>[...]]``, or the ``--map-<LANG>=[+|-]<extension>|<pattern>|<rexpr>``
 options. (Some of the heuristics are applied whether ``--guess-language-eagerly``
 is given or not.)
+
+The order of testing is relative-path regular expressions (specified with
+``--map-<LANG>=<rexpr>``), file name patterns, then file extensions.
 
 .. TODO: all heuristics??? To be confirmed.
 
@@ -1521,7 +1644,7 @@ template file name testing
 "vim modeline" testing
 	Like the modeline of the Emacs editor, Vim editor has the same concept.
 	ctags treats ``TYPE`` as a name of interpreter and applies the same
-	rule of "interpreter" heuristic testing if the last 5 lines of the file
+	rule of "interpreter" heuristic testing if the first or last 5 lines of the file
 	have one of the following patterns::
 
 		filetype=TYPE
@@ -1701,6 +1824,10 @@ The meaning of major fields is as follows (long-name flag/one-letter flag):
 ``name``/``N``
 	The name of language objects.
 
+``nth``/``o``
+	The order in the parent scope.
+	(i.e. 4th parameter in the function).
+
 ``pattern``/``P``
 	Can be used to search the ``name`` in ``input``
 
@@ -1809,6 +1936,8 @@ roles of tags to include in the output file for a particular language.
 Inquire the output of "``ctags --list-roles``" for the list of
 roles.
 
+.. _extras:
+
 Extras
 ~~~~~~
 
@@ -1900,6 +2029,25 @@ The meaning of major extras is as follows (long-name flag/one-letter flag):
 	ctags to create the extra tags for any source files.
 
 	The etags mode enables the ``Unknown`` parser implicitly.
+
+``nulltag``/``z``
+	Include tags (*null tags*) having empty strings as their names.
+	Generally speaking, trying to make a null tag is a sign of a parser bug
+	or broken input. ctags warns such trying or throws the
+	null tag away. To suppress the warnings, use ``--quiet`` option.
+
+	On the other hand, null tags are valid in some languages.
+	Consider ``{"":  val}`` in a JavaScript source code. The empty string is
+	valid as a key. If a parser intentionally makes a null tag (a valid null tag),
+	ctags doesn't warn but discard it by default.
+
+	The discards are due because some output formats may not consider null tags.
+
+	With ``nulltag``/``z`` extra, you can force ctags to emit the nulltags. This extra
+	is effective only if the output format supports null tags. ``--list-output-formats``
+	option tells you which output formats support null tags.
+
+	(since version 6.2.0)
 
 ``pseudo``/``p``
 	Include pseudo-tags. Enabled by default unless the tag file is
@@ -2084,6 +2232,19 @@ identical.
 
 This can be avoided by use of the ``--excmd=n`` option.
 
+INCOMPATIBLE CHANGES
+--------------------
+See :ref:`ctags-incompatibilities(7) <ctags-incompatibilities(7)>` about incompatibilities between Universal
+Ctags and Exuberant Ctags.
+
+This section describes major incompatibilities within versions of Universal
+Ctags.
+
+Unifying the kind Letter for ``unknown`` kinds
+	Some parsers used different kind letters for ``unknown`` kinds.
+	EmacsLisp used ``u``. Go used ``u``. Julian used ``x``. Lisp used ``u``.
+	Lua used ``X``. and Python used ``x``. They were unified to ``Y`` in
+	the during development of version 5.9.x.
 
 BUGS
 ----
@@ -2132,15 +2293,20 @@ ENVIRONMENT VARIABLES
 FILES
 -----
 
+Output files
+~~~~~~~~~~~~
+
 ``tags``
 	The default tag file created by ctags.
 
 ``TAGS``
 	The default tag file created by etags.
 
+Preloading option files
+~~~~~~~~~~~~~~~~~~~~~~~
+
 ``$XDG_CONFIG_HOME/ctags/*.ctags``, or ``$HOME/.config/ctags/*.ctags`` if
 ``$XDG_CONFIG_HOME`` is not defined
-(on other than MS Windows)
 
 ``$HOME/.ctags.d/*.ctags``
 
@@ -2176,6 +2342,34 @@ FILES
 
 	``*.ctags`` files in a directory are loaded in alphabetical order.
 
+Default optlib path list
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+``$XDG_CONFIG_HOME/ctags``, or ``$HOME/.config/ctags`` if
+``$XDG_CONFIG_HOME`` is not defined
+
+``$HOME/.ctags.d``
+
+``$HOMEDRIVE$HOMEPATH/ctags.d`` (on MS Windows only)
+
+	These directories are parts of the optlib path list by default.
+	See "`Option File Options`_" about the optlib path list.
+
+	If you have a set of options that you want to enable
+	conditionally, make a directory in the path in the optlib path
+	list, and put the options to the files having .ctags as extensions
+	under the directory. ``--options=<the-directory-name>`` is for
+	enabling the options.
+
+	For example, consider you have some options you want to enable
+	only when tagging the Linux kernel source tree.  In that case,
+	make ``$HOME/.ctags.d/linux`` directory, put the options to
+	``$HOME/.ctags.d/linux/my.ctags``. If you have many options, you
+	can split them into multiple files like
+	``$HOME/.ctags.d/linux/device-driver.ctags`` and
+	``$HOME/.ctags.d/linux/network-stack.ctags``. Either way, you can
+	enable the options in the .ctags file(s) under the directory by
+	adding ``--options=linux`` to your ctags command line.
 
 SEE ALSO
 --------
@@ -2201,6 +2395,8 @@ The official Universal Ctags web site at: https://ctags.io/
 Also ``ex(1)``, ``vi(1)``, ``elvis(1)``, or, better yet, ``vim(1)``, the official editor of ctags.
 For more information on ``vim(1)``, see the Vim web site at: https://www.vim.org/
 
+About the file format for ``TAGS``, see `emacs git
+<https://git.savannah.gnu.org/cgit/emacs.git/tree/etc/ETAGS.EBNF>`_.
 
 AUTHOR
 ------

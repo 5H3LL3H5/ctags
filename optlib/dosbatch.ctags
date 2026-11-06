@@ -1,0 +1,29 @@
+#
+#   Copyright (c) 2009, David Fishburn
+#   Copyright (c) 2026, Masatake YAMATO
+#
+#   This source code is released for free distribution under the terms of the
+#   GNU General Public License version 2 or (at your option) any later version.
+#
+#   This module contains functions for generating tags for DOS Batch language files.
+#
+#   Masatake YAMATO converted the original .c file to .ctags.
+#
+--langdef=DosBatch{version=1.1}
+--map-DosBatch=+.bat
+--map-DosBatch=+.cmd
+--__selector-DosBatch=selectByRexxCommentAndDosbatchLabelPrefix
+
+--kinddef-DosBatch=l,label,labels
+--kinddef-DosBatch=v,variable,variables
+--kinddef-DosBatch=b,batchfile,batch files{_refonly}{version=1}
+
+--_roledef-DosBatch.{label}=called,called via call command{version=1}
+--roles-DosBatch.{label}=-{called}
+--_roledef-DosBatch.{batchfile}=called,called via call command{version=1}
+
+--regex-DosBatch=/^:([A-Za-z_0-9]+)/\1/l/
+--regex-DosBatch=/set[ \t]+([A-Za-z_0-9]+)[ \t]*=/\1/v/{icase}
+--regex-DosBatch=/call[ \t]+:([A-Za-z_0-9]+)/\1/l/{_role=called}{icase}{exclusive}
+--regex-DosBatch=/call[ \t]+"([^"]+)"/\1/b/{_role=called}{icase}{exclusive}
+--regex-DosBatch=/call[ \t]+([^\t ]+)/\1/b/{_role=called}{icase}{exclusive}

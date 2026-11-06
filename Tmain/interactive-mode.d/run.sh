@@ -9,7 +9,13 @@ is_feature_available ${CTAGS} interactive
 # It seems that the output format is slightly different between libjansson versions
 s()
 {
-	sed -e s/':"'/': "'/g
+	sed -e s/':"'/': "'/g | jdropver
+}
+
+trim_errno()
+{
+	# The value errno depends on the platform.
+	sed -e s/' "errno": [0-9]*,'//
 }
 
 CTAGS="$CTAGS --options=NONE"
@@ -31,7 +37,7 @@ echo '{"command":"generate-tags"}' | ${CTAGS} --_interactive |s
 echo
 echo error on invalid file
 echo =======================================
-echo '{"command":"generate-tags", "filename":"test.foo"}' | ${CTAGS} --_interactive |s
+echo '{"command":"generate-tags", "filename":"test.foo"}' | ${CTAGS} --_interactive |s |trim_errno
 
 echo
 echo generate tags from file

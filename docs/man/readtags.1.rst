@@ -6,14 +6,15 @@ readtags
 
 Find tag file entries matching specified names
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 1
 
 SYNOPSIS
 --------
 |	**readtags** -h | --help
-|	**readtags** (-H | --help-expression) (filter|sorter)
+|	**readtags** (-H | --help-expression) (filter|sorter|formatter)
+|	**readtags** -v | --version
 |	**readtags** [OPTION]... ACTION
 
 DESCRIPTION
@@ -21,8 +22,8 @@ DESCRIPTION
 The **readtags** program filters, sorts and prints tag entries in a tags file.
 The basic filtering is done using **actions**, by which you can list all
 regular tags, pseudo tags or regular tags matching specific name. Then, further
-filtering and sorting can be done using **post processors**, namely **filter
-expressions** and **sorter expressions**.
+filtering, sorting, and formatting can be done using **post processors**, namely
+**filter expressions**, **sorter expressions**, and **formatter expressions**.
 
 ACTIONS
 -------
@@ -34,7 +35,8 @@ ACTIONS
 	"-" as NAME indicates arguments after this as NAME even if they start with -.
 
 ``-D``, ``--list-pseudo-tags``
-	Equivalent to ``--list-pseudo-tags``.
+	List pseudo tags.
+	You can use this option with ``-Q`` option to extract specified pseudo tags.
 
 OPTIONS
 -------
@@ -45,6 +47,10 @@ The behavior of reading tags can be controlled using these options:
 
 ``-t TAGFILE``, ``--tag-file TAGFILE``
 	Use specified tag file (default: "tags").
+	Giving "-" as TAGFILE indicates reading the tags file content from the
+	standard input. "-" can make the command line simpler. However,
+	it doesn't mean efficient; readtags stores the data to a temporary
+	file and reads that file for taking the ACTION.
 
 ``-s[0|1|2]``, ``--override-sort-detection METHOD``
 	Override sort detection of tag file.
@@ -68,6 +74,19 @@ Controlling the Output
 By default, the output of readtags contains only the name, input and pattern
 field. The Output can be tweaked using these options:
 
+``-A``, ``--absolute-input``
+	Do the same as ``-C`` option but use only absolute path form.
+
+``-C``, ``--canonicalize-input``
+	Resolve '..' and '.' in input fields of regular tags.
+	This produces a unique representation of the input path.
+	This option works only with tags files having ``!_TAG_PROC_CWD`` pseudo
+	tag.
+
+	NOTE: The current implementation accepts only ``!_TAG_PROC_CWD``
+	starting with ``/``; a Windows directory name starting with a
+	drive letter like ``C:\Somewhere`` is not acceptable.
+
 ``-d``, ``--debug``
 	Turn on debugging output.
 
@@ -80,6 +99,11 @@ field. The Output can be tweaked using these options:
 ``-n``, ``--line-number``
 	Also include the line number field when ``-e`` option is give.
 
+``-P``, ``--with-pseudo-tags``
+	List pseudo tags as if ``-D`` option is specified but continues processing without exiting.
+	Even if you specify the ``-Q`` and ``-P`` options together, ``-Q``  affects only
+	regular tags; it doesn't affect pseudo tags.
+
 About the ``-E`` option: certain characters are escaped in a tags file, to make
 it machine-readable. e.g., ensuring no tabs character appear in fields other
 than the pattern field. By default, readtags translates them to make it
@@ -87,15 +111,26 @@ human-readable, but when utilizing readtags output in a script or a client
 tool, ``-E`` option should be used. See :ref:`ctags-client-tools(7) <ctags-client-tools(7)>` for more
 discussion on this.
 
-Filtering and Sorting
-~~~~~~~~~~~~~~~~~~~~~
-Further filtering and sorting on the tags listed by actions are performed using:
+About printing input fields ({tagfile} in :ref:`tags(5) <tags(5)>`) with ``-E`` option: readtags
+always prints the input field literally (as it is in the tags file), and when
+ctags writes the tags file, the escaping rules are applied only when
+``TAG_OUTPUT_MODE`` pseudo tag has "u-ctags" and ``TAG_OUTPUT_FILESEP`` has
+"slash" as values for their input fields, as explained in
+:ref:`ctags-client-tools(7) <ctags-client-tools(7)>`.
+
+Filtering, Sorting, and Formatting
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Further filtering, sorting, and formatting on the tags listed by actions
+are performed using:
 
 ``-Q EXP``, ``--filter EXP``
 	Filter the tags listed by ACTION with EXP before printing.
 
 ``-S EXP``, ``--sorter EXP``
 	Sort the tags listed by ACTION with EXP before printing.
+
+``-F EXP``, ``--formatter EXP``
+	Format the tags listed by ACTION with EXP when printing.
 
 These are discussed in the `EXPRESSION`_ section.
 
@@ -127,8 +162,8 @@ Examples
 
 EXPRESSION
 ----------
-Scheme-style expressions are used for the ``-Q`` and ``-S`` options. For those
-who doesn't know Scheme or Lisp, just remember:
+Scheme-style expressions are used for the ``-Q``, ``-S``, and ``-F`` options.
+For those who doesn't know Scheme or Lisp, just remember:
 
 * A function call is wrapped in a pair of parenthesis. The first item in it is
   the function/operator name, the others are arguments.
@@ -243,6 +278,30 @@ not reference tags. Here's how to do it:
 Notice that ``(not $extras)`` produces ``#t`` when ``$extras`` is missing, so
 the whole ``or`` expression produces ``#t``.
 
+
+The combination of ``ctags -o -`` and ``readtags -t -`` is handy for inspecting
+a source file as far as the source file is enough short.
+
+* List all the large (> 100 lines) functions in a file:
+
+  .. code-block:: console
+
+     $ ctags -o - --fields=+neKz input.c \
+       | ./readtags -t - -en \
+                    -Q '(and (eq? $kind "function") $end $line (> (- $end $line) 100))' \
+                    -l
+
+* List all the tags including line 80 in a file:
+
+  .. code-block:: console
+
+     $ ctags -o - --fields=+neKz input.c \
+       | readtags -t - -ne \
+                  -Q '(and $line
+                           (or (eq? $line 80)
+                               (and $end (< $line 80) (< 80 $end))))' \
+         -l
+
 Run "readtags -H filter" to know about all valid functions and variables.
 
 Sorting
@@ -306,6 +365,72 @@ A quick read tells us: If $-entry has "file" kind, and &-entry doesn't, the
 sorter becomes ``(<> 1 -1)``, which produces ``1``, so the $-entry is put below
 the &-entry, exactly what we want.
 
+Formatting
+~~~~~~~~~~
+A formatter expression defines how readtags prints tag entries.
+
+A formatter expression may produce a string, a boolean, an integer,
+or a list. Readtags prints the produced string, and integer as is.
+Readtags prints nothing for ``#f``, and a newline for ``#t``.
+
+A list could contain any number of strings, booleans,
+integers, and/or lists. Readtags prints the elements of a list
+sequentially and recursively.
+
+All the operators for filtering are also available in formatter
+expressions. In addition to the operators, ``list`` is available
+in formatter expressions. As the name shows, ``list`` is for
+making a list. ``list`` makes a list containing arguments passed to
+the operator. e.g., the following expression makes a list contains
+``1``, ``#f``, and ``"hello"``:
+
+.. code-block:: lisp
+
+   (list 1 #f "hello")
+
+NOTE: Unlike real-Lisp, backquote constructs are not available.
+
+To show some examples, the following tags file (``output.tags``) is assumed
+as input for readtags:
+
+.. code-block:: tags
+
+   M	input.c	4;"	macro	file:
+   N	input.c	3;"	macro	file:
+   bar	input.c	11;"	f	typeref:typename:void	file:	signature:(char ** argv,int * r)
+   foo	input.c	6;"	f	typeref:typename:int	file:	signature:(int v)
+   main	input.c	16;"	f	typeref:typename:int	signature:(int argc,char ** argv)
+
+An example for printing only function names:
+
+.. code-block:: console
+
+   $ readtags -t output.tags -Q '(eq? $kind "function")' -F '(list $name #t)' -l
+   bar
+   foo
+   main
+
+Doing the same only with a formatter expression:
+
+.. code-block:: console
+
+   $ readtags -t output.tags -F '(if (eq? $kind "function") (list $name #t) #f)' -l
+   bar
+   foo
+   main
+
+Generating declarations for the functions:
+
+.. code-block:: console
+
+   $ readtags -t output.tags -F \
+     '(if (eq? $kind "function")
+         (list (if $file "static " #f) $typeref-name " " $name $signature ";" #t)
+        #f)' -l
+   static void bar(char ** argv,int * r);
+   static int foo(int v);
+   int main(int argc,char ** argv);
+
 Inspecting the Behavior of Expressions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 The `print` operator can be used to print the value of an expression. For
@@ -352,5 +477,5 @@ Darren Hiebert <dhiebert@users.sourceforge.net>
 http://DarrenHiebert.com/
 
 The readtags command and libreadtags maintained at Universal Ctags
-are derived from readtags.c and readtags.h developd at
+are derived from readtags.c and readtags.h developed at
 http://ctags.sourceforge.net.

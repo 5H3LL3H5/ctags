@@ -3,15 +3,12 @@
 OBJEXT = o
 include source.mak
 
-GNULIB_HEADS = gnulib/regex.h gnulib/fnmatch.h
-GNULIB_SRCS =  gnulib/regex.c gnulib/localeconv.c gnulib/nl_langinfo.c gnulib/setlocale_null.c gnulib/malloc/dynarray_resize.c
-GNULIB_SRCS += gnulib/fnmatch.c gnulib/mempcpy.c gnulib/wmempcpy.c
-GNULIB_OBJS = $(GNULIB_SRCS:.c=.$(OBJEXT))
+GNULIB_OBJS = $(MINGW_GNULIB_SRCS:.c=.$(OBJEXT))
 
 CFLAGS = -Wall -std=gnu99
 COMMON_DEFINES =
-DEFINES = -DWIN32 $(COMMON_DEFINES) -DHAVE_CONFIG_H -DHAVE_PACKCC
-INCLUDES = -I. -Ignulib -iquote parsers -iquote main -iquote dsl
+DEFINES = $(COMMON_DEFINES) -DHAVE_CONFIG_H -DHAVE_PACKCC
+INCLUDES = -I. -Ignulib -Ilibreadtags -iquote parsers -iquote main -iquote dsl
 CC = gcc
 WINDRES = windres
 OPTLIB2C = ./misc/optlib2c
@@ -29,6 +26,12 @@ VPATH = . ./gnulib ./main ./parsers ./optlib ./extra-cmds ./libreadtags ./win32
 ifeq (yes, $(WITH_ICONV))
 DEFINES += -DHAVE_ICONV
 LIBS += -liconv
+endif
+ifeq (yes, $(WITH_PCRE2))
+CFLAGS += -DHAVE_LIBPCRE2=1 $(shell pkg-config --cflags libpcre2-8)
+LIBS += $(shell pkg-config --libs libpcre2-8)
+PARSER_SRCS += $(PCRE2_SRCS)
+PARSER_HEADS += $(PCRE2_HEADS)
 endif
 ifeq (yes, $(WITH_YAML))
 CFLAGS += -DHAVE_LIBYAML=1 $(shell pkg-config --cflags yaml-0.1)
@@ -95,32 +98,35 @@ V_WINDRES_1 =
 peg/%.c peg/%.h: peg/%.peg $(PACKCC)
 	$(V_PACKCC) $(PACKCC) $<
 
-all: copy_gnulib_heads $(PACKCC) ctags.exe readtags.exe optscript.exe
+all: copy_gnulib_heads $(PACKCC) ctags.exe readtags.exe optscript.exe utiltest.exe
 
 ctags: ctags.exe
 
-$(PACKCC_OBJS): $(PACKCC_SRCS)
+$(PACKCC_OBJ): $(PACKCC_SRC)
 	$(V_CC) $(CC_FOR_PACKCC) -c $(OPT) $(CFLAGS) $(COMMON_DEFINES) -o $@ $<
 
-$(PACKCC): $(PACKCC_OBJS)
+$(PACKCC): $(PACKCC_OBJ)
 	$(V_CC) $(CC_FOR_PACKCC) $(OPT) -o $@ $^
 
-ctags.exe: $(ALL_OBJS) $(ALL_HEADS) $(PEG_HEADS) $(PEG_EXTRA_HEADS) $(GNULIB_HEADS) $(WIN32_HEADS)
+ctags.exe: $(ALL_OBJS) $(ALL_HEADS) $(PEG_HEADS) $(PEG_EXTRA_HEADS) $(MINGW_GNULIB_HEADS) $(WIN32_HEADS)
 	$(V_CC) $(CC) $(OPT) $(CFLAGS) $(LDFLAGS) $(DEFINES) $(INCLUDES) -o $@ $(ALL_OBJS) $(LIBS)
 
 $(RES_OBJ): win32/ctags.rc win32/ctags.exe.manifest win32/resource.h
 	$(V_WINDRES) $(WINDRES) -o $@ -O coff $<
 
 extra-cmds/%.o: extra-cmds/%.c
-	$(V_CC) $(CC) -c $(OPT) $(CFLAGS) -DWIN32 -Ilibreadtags $(INCLUDES) -o $@ $<
-libreadtags/%.o: libreadtags/%.c
-	$(V_CC) $(CC) -c $(OPT) $(CFLAGS) -DWIN32 -Ilibreadtags -o $@ $<
+	$(V_CC) $(CC) -c $(OPT) $(CFLAGS) $(INCLUDES) -o $@ $<
+libreadtags/%.o: libreadtags/%.c $(UTIL_HEADS)
+	$(V_CC) $(CC) -c $(OPT) $(CFLAGS) -Ilibreadtags $(INCLUDES) -DHAVE_CTAGS_INLINE_H -o $@ $<
 
-readtags.exe: $(READTAGS_OBJS) $(READTAGS_HEADS) $(GNULIB_OBJS) $(GNULIB_HEADS)
-	$(V_CC) $(CC) $(OPT) -o $@ $(READTAGS_OBJS) $(GNULIB_OBJS) $(LIBS)
+readtags.exe: $(READTAGS_OBJS) $(READTAGS_HEADS) $(UTIL_OBJS) $(UTIL_HEADS) $(READTAGS_DSL_OBJS) $(READTAGS_DSL_HEADS) $(GNULIB_OBJS) $(MINGW_GNULIB_HEADS)
+	$(V_CC) $(CC) $(OPT) -o $@ $(READTAGS_OBJS) $(UTIL_OBJS) $(READTAGS_DSL_OBJS) $(GNULIB_OBJS) $(LIBS)
 
 optscript.exe: $(ALL_LIB_OBJS) $(OPTSCRIPT_OBJS) $(ALL_LIB_HEADS) $(OPTSCRIPT_DSL_HEADS) $(WIN32_HEADS)
 	$(V_CC) $(CC) $(OPT) $(CFLAGS) $(LDFLAGS) $(DEFINES) $(INCLUDES) -o $@ $(ALL_LIB_OBJS) $(OPTSCRIPT_OBJS) $(LIBS)
+
+utiltest.exe: $(UTIL_OBJS) $(UTIL_HEAD) $(UTILTEST_OBJS) $(UTILTEST_HEADS)
+	$(V_CC) $(CC) $(OPT) $(CFLAGS) $(LDFLAGS) -o $@ $(UTIL_OBJS) $(UTILTEST_OBJS)
 
 copy_gnulib_heads:
 	cp win32/config_mingw.h config.h

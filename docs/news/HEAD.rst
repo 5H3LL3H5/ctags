@@ -1,0 +1,173 @@
+======================================================================
+Changes in 6.?.?
+======================================================================
+
+This page lists only the most significant changes as remembered.  Use
+git-log to review changes not enumerated here, especially in language
+parsers.
+
+Critical bug fixes
+---------------------------------------------------------------------
+
+* fixes a bug where a guest parser with a regex rule using postrun flag
+  could enter an infinite loop.
+
+Common enhancement
+---------------------------------------------------------------------
+* Makes ``--_interactive=sandbox`` option work with musl libc.
+* Removes the temporary file used for writing tags to stdout (``-o -``
+  and ``--_interactive``) right after creating it, so the file no
+  longer stays behind when ctags is killed. This doesn't apply to
+  Windows.
+
+New and extended options and their flags
+---------------------------------------------------------------------
+
+New option: ``--describe-language=<language>``
+
+    Prints the various aspects of the parser implementing the language.
+
+New column, VER in the output of ``--list-{kinds-full,roles,fields,extras,pseudo-tags}`` options
+
+    Indicates the versions of ctags output (or the parser) introducing the
+    item in the list.
+
+Extend ``--map-<LANG>=`` and ``--langmap=`` options to choose a parser using regular expressions
+
+	``--map-<LANG>=[+]%REXPR%`` (or ``--langmap=<LANG>:[+]%REXPR%``) maps relative-paths
+	that match the regular expression to the given language.
+
+	The new ``--list-map-rexprs`` lists all regular-expression-based mappings.
+
+	``--list-maps`` has also been extended to include regular-expression-based mappings.
+
+Incompatible changes
+---------------------------------------------------------------------
+Messages for broken symlinks are now emitted at NOTICE level instead of
+WARNING.  They are shown by default, but can be suppressed with the
+``--quiet`` option.
+
+Parser related changes
+---------------------------------------------------------------------
+JavaScript:
+
+    * A new field "properties" was added to indicate that a field or
+      member of a class is static.
+    * Class member names prefixed with # are recognized as private.
+
+C#:
+
+    * Fix a bug that prevents the parser from extracting methods
+	  if the method has nullable parameters.
+
+Meson:
+
+    * Extract config vars defined inside configuration_data({...}).
+
+Python:
+
+    * Support type statements.
+
+Clojure:
+
+    * Verify namespace when extracting tag.
+
+      The older version doesn't consider NAMESPACE when processing
+      input like (NAMESPACE/defn foo ...).
+
+      With this change, the parser emits ``functions`` and/or
+      ``namespaces`` kind tags only if NAMESPACES is
+      "``clojure.core``".  For the other namespaces, the parser emits
+      "``unknown``" kind tags.
+
+SQL:
+
+    * Add ``type`` kind to extract ``t`` in "``CREATE TYPE t ...``".
+
+QemuHX:
+
+    * Extract command in ``{ "command", ...``.
+    * Implement a selector arbitrating Haxe and QemuHX parsers, both handling
+	  ``.hx`` file extension.
+
+Go:
+
+    * Add ``receiver`` field to ``func`` kind tags.
+
+Rust:
+
+    * Add ``macro`` field.
+      The Rust parser now extracts definition-like constructs found
+      in macro arguments as tags. For such tags, the parser records
+      the name of the enclosing macro invocation in the ``macro`` field.
+
+DosBatch:
+
+    * Add ``batchfile`` kind to extract the names of batch files passed to ``call`` command.
+      New ``called`` role is used for recording batch files.
+    * Add ``called`` role to ``label`` kind for recording labels passed to ``call`` command.
+
+CMake:
+
+    * Add ``module`` kind for extracting ``MODULE`` in ``Include(MODULE)``.
+
+Java:
+
+    * Add ``record`` kind for extracting ``RECORD`` in ``record RECORD(...)``.
+
+HTML:
+
+    * Extract ``h4``, ``h5``, and ``h6`` contents.
+
+Fortran:
+
+    * Fill ``end`` field.
+
+New parsers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+The following parsers have been added:
+
+* SINEX: to handle SINEX (Solution INdependent EXchange) files
+* Netfilter: to handle the output of "nft list ..." command
+* Prolog
+* DBusService
+* GoMod
+* Odin
+
+Changes about parser specific kinds, roles, fields, and extras
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. See the output of ./misc/news.bash man [v6.2.0]
+
+Readtags
+---------------------------------------------------------------------
+
+* Update the bundled libreadtags to version 0.5.0.
+
+* Add ``list`` operator to the filter and sorter engines.
+  The operator was available only in the formatter expression.
+
+  You can use ``member`` and ``list`` together.
+
+  e.g. With the following command line, you can list only tag entries
+  having ``z`` or ``p`` as their kind.
+
+  .. code-block:: console
+
+	 $ readtags -et tags -Q '(member $kind (list "z" "p" ))' -l
+
+Merged pull requests
+---------------------------------------------------------------------
+
+.. note::
+
+   This list is imperfect. masatake cleaned up some pull requests before
+   merging. Though his name is used in "... by ...", he is not the primary
+   contributor of the pull requests. See git log for more defatils.
+
+.. generated by ./misc/news.bash pr [v6.2.0...]
+
+Issues close or partially closed via above pull requests
+---------------------------------------------------------------------
+
+.. generated by ./misc/news.bash issue [v6.1.0...]

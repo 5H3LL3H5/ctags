@@ -178,10 +178,10 @@
 /* #undef HAVE_FTRUNCATE */
 
 /* Define this value if support multibyte character encoding. */
-#define HAVE_ICONV 1
+/* !!!#define HAVE_ICONV 1 */
 
 /* Define to 1 if you have the <inttypes.h> header file. */
-/* !!!#define HAVE_INTTYPES_H 1 */
+#define HAVE_INTTYPES_H 1
 
 /* Define to 1 if you have the <io.h> header file. */
 #define HAVE_IO_H 1
@@ -364,7 +364,7 @@
 /* #undef HAVE_TOWLOWER */
 
 /* Define to 1 if you have the `truncate' function. */
-#define HAVE_TRUNCATE 1
+/* !!!#define HAVE_TRUNCATE 1 */
 
 /* Define to 1 if typeof works with your compiler. */
 #define HAVE_TYPEOF 1
@@ -421,7 +421,7 @@
 
 
 /* Define to 1 if the compiler supports the keyword '__inline'. */
-/* !!!#define HAVE___INLINE 1 */
+#define HAVE___INLINE 1
 
 /* Define this value if the platform uses "lib" as prefix for iconv functions.
    */
@@ -434,7 +434,7 @@
    this. */
 /* #undef L_tmpnam */
 
-/* Define this label if you want macro tags (defined lables) to use patterns
+/* Define this label if you want macro tags (defined labels) to use patterns
    in the EX command by default (original ctags behavior is to use line
    numbers). */
 /* #undef MACROS_USE_PATTERNS */
@@ -506,7 +506,7 @@
 #define PACKAGE_NAME "universal-ctags"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "universal-ctags 5.9.0"
+#define PACKAGE_STRING "universal-ctags 6.2.0"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "universal-ctags"
@@ -515,7 +515,7 @@
 #define PACKAGE_URL ""
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "5.9.0"
+#define PACKAGE_VERSION "6.2.0"
 
 /* Define if the pthread_in_use() detection is hard. */
 /* #undef PTHREAD_IN_USE_DETECTION_HARD */
@@ -657,7 +657,7 @@
 /* #undef USE_WINDOWS_THREADS */
 
 /* Package version. */
-#define VERSION "5.9.0"
+#define VERSION "6.2.0"
 
 /* Define to l, ll, u, ul, ull, etc., as suitable for constants of type
    'wchar_t'. */

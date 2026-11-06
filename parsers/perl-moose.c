@@ -33,7 +33,7 @@
 #include "entry.h"
 #include "kind.h"
 #include "parse.h"
-#include "perl.h"
+#include "x-perl.h"
 #include "read.h"
 #include "routines.h"
 #include "trace.h"
@@ -182,12 +182,11 @@ static void inputStart (subparser *s)
 static void inputEnd (subparser *s)
 {
 	struct mooseSubparser *moose = (struct mooseSubparser *)s;
-	tagEntryInfo *e = getEntryInCorkQueue (moose->classCork);
-	if (e)
-		e->extensionFields.endLine = getInputLineNumber ();
+	setTagEndLineToCorkEntry (moose->classCork, getInputLineNumber ());
 
 	vStringDelete (moose->supersOrRoles);
 	moose->supersOrRoles = NULL;
+	moose->notInMoose = true;
 }
 
 static void makeTagEntryNotify (subparser *s, const tagEntryInfo *tag, int corkIndex)
@@ -261,11 +260,7 @@ static void leaveMoose (struct mooseSubparser *moose)
 {
 	moose->notContinuousExtendsLines = true;
 
-	tagEntryInfo *e = getEntryInCorkQueue (moose->classCork);
-	if (!e)
-		return;
-
-	e->extensionFields.endLine = getInputLineNumber ();
+	setTagEndLineToCorkEntry (moose->classCork, getInputLineNumber ());
 
 	moose->classCork = CORK_NIL;
 	moose->notInMoose = true;
@@ -285,8 +280,7 @@ static void enterMoose (struct mooseSubparser *moose, bool role)
 
 	tagEntryInfo moose_e;
 	initTagEntry (&moose_e, perl_e->name, role? K_ROLE: K_CLASS);
-	moose_e.lineNumber = perl_e->lineNumber;
-	moose_e.filePosition = perl_e->filePosition;
+	updateTagLine(&moose_e, perl_e->lineNumber, perl_e->filePosition);
 	moose->classCork = makeTagEntry (&moose_e);
 	vStringClear (moose->supersOrRoles);
 
@@ -300,7 +294,7 @@ static void parseExtendsClass (const char *input,
 							   vString *inherits,
 							   bool *notContinuousLine)
 {
-	int i = 0;
+	size_t i = 0;
 	do
 	{
 		if (input [i] == ',')
@@ -346,8 +340,7 @@ static bool findExtendsClass (const char *line,
 	const char *input = line + matches[2].start;
 	vString *str = moose->supersOrRoles;
 
-	if (vStringLength (str) > 0)
-		vStringPut (str, ',');
+	vStringPutUnlessEmpty (str, ',');
 	parseExtendsClass (input, matches[2].length, str,
 					   &moose->notContinuousExtendsLines);
 

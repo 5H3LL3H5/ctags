@@ -24,13 +24,14 @@
 #include "parse.h"
 #include "read.h"
 #include "routines.h"
+#include "selectors.h"
 #include "vstring.h"
 #include "xtag.h"
 
 /*
 *   MACROS
 */
-#define isident(c)              (isalnum(c) || (c) == '_')
+#define isident(c)              (isalnum(c) || (c) == '_' || (c) == '$')
 #define isBlank(c)              (bool) (c == ' ' || c == '\t')
 #define isType(token,t)         (bool) ((token)->type == (t))
 #define isKeyword(token,k)      (bool) ((token)->keyword == (k))
@@ -40,6 +41,14 @@
 /*
 *   DATA DECLARATIONS
 */
+
+typedef enum eFortranPass {
+	INIT_PASS = 1,
+	PASS_FIXED_FORM = INIT_PASS,
+	PASS_FREE_FORM,
+	MAX_PASS = PASS_FREE_FORM
+} fortranPass;
+
 /*  Used to designate type of line read in fixed source form.
  */
 typedef enum eFortranLineType {
@@ -100,6 +109,8 @@ enum eKeywordId {
 	KEYWORD_intent,
 	KEYWORD_interface,
 	KEYWORD_intrinsic,
+	KEYWORD_kind,
+	KEYWORD_len,
 	KEYWORD_logical,
 	KEYWORD_map,
 	KEYWORD_module,
@@ -209,6 +220,9 @@ typedef struct sTokenInfo {
 	struct sTokenInfo *secondary;
 	unsigned long lineNumber;
 	MIOPos filePosition;
+	bool anonymous;
+	int corkIndex;
+	int corkIndexForLinkName;
 } tokenInfo;
 
 /*
@@ -217,10 +231,21 @@ typedef struct sTokenInfo {
 
 static langType Lang_fortran;
 static int Ungetc;
-static unsigned int Column;
-static bool FreeSourceForm;
-static bool FreeSourceFormFound = false;
-static bool ParsingString;
+
+static fortranPass currentPass;
+#define inFreeSourceForm  ((currentPass) == PASS_FREE_FORM)
+#define inFixedSourceForm ((currentPass) == PASS_FIXED_FORM)
+
+/* State used only in FixedSourceForm pass */
+static struct {
+	unsigned int column;
+	bool freeSourceFormFound;
+} Fixed;
+
+/* State used only in FreeSourceForm pass */
+static struct {
+	bool newline;
+} Free;
 
 /* indexed by tagType */
 static kindDefinition FortranKinds [] = {
@@ -300,6 +325,8 @@ static const keywordTable FortranKeywordTable [] = {
 	{ "intent",         KEYWORD_intent       },
 	{ "interface",      KEYWORD_interface    },
 	{ "intrinsic",      KEYWORD_intrinsic    },
+	{ "kind",           KEYWORD_kind         },
+	{ "len",            KEYWORD_len          },
 	{ "logical",        KEYWORD_logical      },
 	{ "map",            KEYWORD_map          },
 	{ "module",         KEYWORD_module       },
@@ -344,6 +371,19 @@ static const keywordTable FortranKeywordTable [] = {
 	{ "while",          KEYWORD_while        }
 };
 
+typedef enum {
+	X_LINK_NAME,
+} fortranXtag;
+
+static xtagDefinition FortranXtagTable [] = {
+	{
+		.enabled = false,
+		.name    = "linkName",
+		.description = "Linking name used in foreign languages",
+		.version = 1
+	},
+};
+
 static struct {
 	unsigned int count;
 	unsigned int max;
@@ -383,10 +423,16 @@ static void ancestorPush (tokenInfo *const token)
 	Ancestors.count++;
 }
 
-static void ancestorPop (void)
+/* Set the end line when nonzero. */
+static void ancestorPop (unsigned long endLine)
 {
 	Assert (Ancestors.count > 0);
 	--Ancestors.count;
+	if (endLine > 0)
+	{
+		setTagEndLineToCorkEntry (Ancestors.list [Ancestors.count].corkIndex, endLine);
+		setTagEndLineToCorkEntry (Ancestors.list [Ancestors.count].corkIndexForLinkName, endLine);
+	}
 	vStringDelete (Ancestors.list [Ancestors.count].string);
 	vStringDelete (Ancestors.list [Ancestors.count].signature);
 
@@ -398,6 +444,8 @@ static void ancestorPop (void)
 	Ancestors.list [Ancestors.count].lineNumber = 0L;
 	Ancestors.list [Ancestors.count].implementation = IMP_DEFAULT;
 	Ancestors.list [Ancestors.count].isMethod   = false;
+	Ancestors.list [Ancestors.count].corkIndex  = CORK_NIL;
+	Ancestors.list [Ancestors.count].corkIndexForLinkName = CORK_NIL;
 }
 
 static const tokenInfo* ancestorScope (void)
@@ -408,8 +456,7 @@ static const tokenInfo* ancestorScope (void)
 	{
 		tokenInfo *const token = Ancestors.list + i - 1;
 		if (token->type == TOKEN_IDENTIFIER &&
-			token->tag != TAG_UNDEFINED  && token->tag != TAG_INTERFACE &&
-			token->tag != TAG_ENUM)
+			token->tag != TAG_UNDEFINED)
 			result = token;
 	}
 	return result;
@@ -426,7 +473,7 @@ static const tokenInfo* ancestorTop (void)
 static void ancestorClear (void)
 {
 	while (Ancestors.count > 0)
-		ancestorPop ();
+		ancestorPop (0);
 	if (Ancestors.list != NULL)
 		eFree (Ancestors.list);
 	Ancestors.list = NULL;
@@ -464,18 +511,34 @@ static tokenInfo *newToken (void)
 	token->isMethod     = false;
 	token->lineNumber   = getInputLineNumber ();
 	token->filePosition = getInputFilePosition ();
+	token->anonymous    = false;
+	token->corkIndex    = CORK_NIL;
+	token->corkIndexForLinkName = CORK_NIL;
 
 	return token;
 }
 
-static tokenInfo *newTokenFrom (tokenInfo *const token)
+static tokenInfo *newTokenFromFull (tokenInfo *const token, bool copyStr)
 {
 	tokenInfo *result = xMalloc (1, tokenInfo);
 	*result = *token;
-	result->string = vStringNewCopy (token->string);
+	result->string = copyStr? vStringNewCopy (token->string): vStringNew();
 	token->secondary = NULL;
 	token->parentType = NULL;
 	token->signature = NULL;
+	return result;
+}
+
+static tokenInfo *newTokenFrom (tokenInfo *const token)
+{
+	return newTokenFromFull (token, true);
+}
+
+static tokenInfo *newAnonTokenFrom (tokenInfo *const token, unsigned int uTagKind)
+{
+	tokenInfo *result = newTokenFromFull (token, false);
+	result->anonymous = true;
+	anonGenerate (result->string, "__anon", uTagKind);
 	return result;
 }
 
@@ -517,6 +580,48 @@ static const char *implementationString (const impType imp)
 	return names [(int) imp];
 }
 
+static bool hasLinkName(tagEntryInfo *e)
+{
+	switch (e->kindIndex)
+	{
+	case TAG_FUNCTION:
+	case TAG_SUBROUTINE:
+	case TAG_BLOCK_DATA:
+	case TAG_COMMON_BLOCK:
+	case TAG_ENTRY_POINT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+/* ref.
+ * * https://gcc.gnu.org/onlinedocs/gfortran/Code-Gen-Options.html
+ *   - -fno-underscoring
+ *   - -fsecond-underscore
+ * * https://docs.oracle.com/cd/E19957-01/805-4940/z400091044a7/index.html
+ */
+static int makeFortranLinkNameTag(tagEntryInfo *e)
+{
+	vString *ln = vStringNewInit (e->name);
+	vStringLower(ln);
+
+#if 0
+	if (strchr(vStringValue (ln), '_'))
+		vStringPut(ln, '_');
+#endif
+
+	vStringPut(ln, '_');
+
+	tagEntryInfo ln_e = *e;
+	ln_e.name = vStringValue (ln);
+	markTagExtraBit (&ln_e, FortranXtagTable[X_LINK_NAME].xtype);
+	int r = makeTagEntry (&ln_e);
+	vStringDelete (ln);
+
+	return r;
+}
+
 static void makeFortranTag (tokenInfo *const token, tagType tag)
 {
 	token->tag = tag;
@@ -530,8 +635,10 @@ static void makeFortranTag (tokenInfo *const token, tagType tag)
 		if (token->tag == TAG_COMMON_BLOCK)
 			e.lineNumberEntry = canUseLineNumberAsLocator();
 
-		e.lineNumber	= token->lineNumber;
-		e.filePosition	= token->filePosition;
+		if (token->anonymous)
+			markTagExtraBit (&e, XTAG_ANONYMOUS);
+
+		updateTagLine (&e, token->lineNumber, token->filePosition);
 		e.isFileScope	= isFileScope (token->tag);
 		if (e.isFileScope)
 			markTagExtraBit (&e, XTAG_FILE_SCOPE);
@@ -547,8 +654,8 @@ static void makeFortranTag (tokenInfo *const token, tagType tag)
 			}
 		}
 		if (token->parentType != NULL &&
-		    vStringLength (token->parentType) > 0 &&
-		    (token->tag == TAG_DERIVED_TYPE || (token->tag == TAG_SUBMODULE)))
+			vStringLength (token->parentType) > 0 &&
+			(token->tag == TAG_DERIVED_TYPE || (token->tag == TAG_SUBMODULE)))
 			e.extensionFields.inheritance = vStringValue (token->parentType);
 		if (token->implementation != IMP_DEFAULT)
 			e.extensionFields.implementation =
@@ -559,7 +666,10 @@ static void makeFortranTag (tokenInfo *const token, tagType tag)
 			 token->tag == TAG_SUBROUTINE ||
 			 token->tag == TAG_PROTOTYPE))
 			e.extensionFields.signature = vStringValue (token->signature);
-		makeTagEntry (&e);
+		token->corkIndex = makeTagEntry (&e);
+		if (isXtagEnabled (FortranXtagTable[X_LINK_NAME].xtype)
+			&& hasLinkName(&e))
+			token->corkIndexForLinkName = makeFortranLinkNameTag(&e);
 	}
 }
 
@@ -658,61 +768,61 @@ static lineType getLineType (void)
 	return type;
 }
 
-static int getFixedFormChar (void)
+static int getFixedFormChar (bool parsingString, bool *freeSourceFormFound)
 {
 	bool newline = false;
 	lineType type;
 	int c = '\0';
 
-	if (Column > 0)
+	if (Fixed.column > 0)
 	{
 #ifdef STRICT_FIXED_FORM
 		/*  EXCEPTION! Some compilers permit more than 72 characters per line.
 		 */
-		if (Column > 71)
+		if (Fixed.column > 71)
 			c = skipLine ();
 		else
 #endif
 		{
 			c = getcFromInputFile ();
-			++Column;
+			++Fixed.column;
 		}
 		if (c == '\n')
 		{
 			newline = true;  /* need to check for continuation line */
-			Column = 0;
+			Fixed.column = 0;
 		}
-		else if (c == '!'  &&  ! ParsingString)
+		else if (c == '!'  &&  ! parsingString)
 		{
 			c = skipLine ();
 			newline = true;  /* need to check for continuation line */
-			Column = 0;
+			Fixed.column = 0;
 		}
 		else if (c == '&')  /* check for free source form */
 		{
 			const int c2 = getcFromInputFile ();
 			if (c2 == '\n')
-				FreeSourceFormFound = true;
+				*freeSourceFormFound = true;
 			else
 				ungetcToInputFile (c2);
 		}
 	}
-	while (Column == 0)
+	while (Fixed.column == 0)
 	{
 		type = getLineType ();
 		switch (type)
 		{
 			case LTYPE_UNDETERMINED:
 			case LTYPE_INVALID:
-				FreeSourceFormFound = true;
-				if (! FreeSourceForm)
-				    return EOF;
+				*freeSourceFormFound = true;
+				if (inFixedSourceForm)
+					return EOF;
 
 			case LTYPE_SHORT: break;
 			case LTYPE_COMMENT: skipLine (); break;
 
 			case LTYPE_EOF:
-				Column = 6;
+				Fixed.column = 6;
 				if (newline)
 					c = '\n';
 				else
@@ -723,20 +833,20 @@ static int getFixedFormChar (void)
 				if (newline)
 				{
 					c = '\n';
-					Column = 6;
+					Fixed.column = 6;
 					break;
 				}
 				/* fall through to next case */
 			case LTYPE_CONTINUATION:
-				Column = 5;
+				Fixed.column = 5;
 				do
 				{
 					c = getcFromInputFile ();
-					++Column;
+					++Fixed.column;
 				} while (isBlank (c));
 				if (c == '\n')
-					Column = 0;
-				else if (Column > 6)
+					Fixed.column = 0;
+				else if (Fixed.column > 6)
 				{
 					ungetcToInputFile (c);
 					c = ' ';
@@ -760,7 +870,6 @@ static int skipToNextLine (void)
 
 static int getFreeFormChar (void)
 {
-	static bool newline = true;
 	bool advanceLine = false;
 	int c = getcFromInputFile ();
 
@@ -775,7 +884,7 @@ static int getFreeFormChar (void)
 		while (isspace (c)  &&  c != '\n');
 		if (c == '\n')
 		{
-			newline = true;
+			Free.newline = true;
 			advanceLine = true;
 		}
 		else if (c == '!')
@@ -786,16 +895,16 @@ static int getFreeFormChar (void)
 			c = '&';
 		}
 	}
-	else if (newline && (c == '!' || c == '#'))
+	else if (Free.newline && (c == '!' || c == '#'))
 		advanceLine = true;
 	while (advanceLine)
 	{
 		while (isspace (c))
 			c = getcFromInputFile ();
-		if (c == '!' || (newline && c == '#'))
+		if (c == '!' || (Free.newline && c == '#'))
 		{
 			c = skipToNextLine ();
-			newline = true;
+			Free.newline = true;
 			continue;
 		}
 		if (c == '&')
@@ -803,11 +912,11 @@ static int getFreeFormChar (void)
 		else
 			advanceLine = false;
 	}
-	newline = (bool) (c == '\n');
+	Free.newline = (bool) (c == '\n');
 	return c;
 }
 
-static int getChar (void)
+static int getCharFull (bool parsingString, bool *freeSourceFormFound)
 {
 	int c;
 
@@ -816,11 +925,17 @@ static int getChar (void)
 		c = Ungetc;
 		Ungetc = '\0';
 	}
-	else if (FreeSourceForm)
+	else if (inFreeSourceForm)
 		c = getFreeFormChar ();
 	else
-		c = getFixedFormChar ();
+		c = getFixedFormChar (parsingString,
+							  freeSourceFormFound);
 	return c;
+}
+
+static int getChar (void)
+{
+	return getCharFull (false, &Fixed.freeSourceFormFound);
 }
 
 static void ungetChar (const int c)
@@ -888,22 +1003,20 @@ static vString *parseNumeric (int c)
 static void parseString (vString *const string, const int delimiter)
 {
 	const unsigned long inputLineNumber = getInputLineNumber ();
-	int c;
-	ParsingString = true;
-	c = getChar ();
+	int c = getCharFull (true, &Fixed.freeSourceFormFound);
+
 	while (c != delimiter  &&  c != '\n'  &&  c != EOF)
 	{
 		vStringPut (string, c);
-		c = getChar ();
+		c = getCharFull (true, &Fixed.freeSourceFormFound);
 	}
 	if (c == '\n'  ||  c == EOF)
 	{
 		verbose ("%s: unterminated character string at line %lu\n",
 				getInputFileName (), inputLineNumber);
-		if (c != EOF && ! FreeSourceForm)
-			FreeSourceFormFound = true;
+		if (c != EOF && inFixedSourceForm)
+			Fixed.freeSourceFormFound = true;
 	}
-	ParsingString = false;
 }
 
 /*  Read a C identifier beginning with "firstChar" and places it into "name".
@@ -990,6 +1103,8 @@ static void readToken (tokenInfo *const token)
 	token->parentType = NULL;
 	token->isMethod = false;
 	token->signature = NULL;
+	token->corkIndex = CORK_NIL;
+	token->corkIndexForLinkName = CORK_NIL;
 
 getNextChar:
 	c = getChar ();
@@ -1028,7 +1143,7 @@ getNextChar:
 		}
 
 		case '!':
-			if (FreeSourceForm)
+			if (inFreeSourceForm)
 			{
 				do
 				   c = getChar ();
@@ -1037,12 +1152,12 @@ getNextChar:
 			else
 			{
 				skipLine ();
-				Column = 0;
+				Fixed.column = 0;
 			}
 			/* fall through to newline case */
 		case '\n':
 			token->type = TOKEN_STATEMENT_END;
-			if (FreeSourceForm)
+			if (inFreeSourceForm)
 				checkForLabel ();
 			break;
 
@@ -1181,7 +1296,7 @@ static void skipOverParens (tokenInfo *const token)
 	skipOverParensFull (token, NULL, NULL);
 }
 
-static void skipOverSqaures (tokenInfo *const token)
+static void skipOverSquares (tokenInfo *const token)
 {
 	skipOverSquaresFull (token, NULL, NULL);
 }
@@ -1427,6 +1542,8 @@ static tokenInfo *parseQualifierSpecList (tokenInfo *const token)
 			case KEYWORD_allocatable:
 			case KEYWORD_external:
 			case KEYWORD_intrinsic:
+			case KEYWORD_kind:
+			case KEYWORD_len:
 			case KEYWORD_optional:
 			case KEYWORD_private:
 			case KEYWORD_pointer:
@@ -1470,7 +1587,7 @@ static tokenInfo *parseQualifierSpecList (tokenInfo *const token)
 
 			case KEYWORD_codimension:
 				readToken (token);
-				skipOverSqaures (token);
+				skipOverSquares (token);
 				break;
 
 			default: skipToToken (token, TOKEN_STATEMENT_END); break;
@@ -1522,7 +1639,7 @@ static void parseEntityDecl (tokenInfo *const token,
 	if (isType (token, TOKEN_PAREN_OPEN))
 		skipOverParens (token);
 	if (isType (token, TOKEN_SQUARE_OPEN))
-		skipOverSqaures (token);
+		skipOverSquares (token);
 	if (isType (token, TOKEN_OPERATOR) &&
 			strcmp (vStringValue (token->string), "*") == 0)
 	{
@@ -1551,7 +1668,7 @@ static void parseEntityDecl (tokenInfo *const token,
 				if (isType (token, TOKEN_PAREN_OPEN))
 					skipOverParens (token);
 				if (isType (token, TOKEN_SQUARE_OPEN))
-					skipOverSqaures (token);
+					skipOverSquares (token);
 			}
 		}
 	}
@@ -1743,25 +1860,27 @@ static void parseUnionStmt (tokenInfo *const token)
  */
 static void parseStructureStmt (tokenInfo *const token)
 {
-	tokenInfo *name;
+	tokenInfo *name = NULL;
 	Assert (isKeyword (token, KEYWORD_structure));
 	readToken (token);
 	if (isType (token, TOKEN_OPERATOR) &&
 		strcmp (vStringValue (token->string), "/") == 0)
 	{  /* read structure name */
 		readToken (token);
-		if (isType (token, TOKEN_IDENTIFIER))
-			makeFortranTag (token, TAG_DERIVED_TYPE);
-		name = newTokenFrom (token);
+		if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
+		{
+			name = newTokenFrom (token);
+			name->type = TOKEN_IDENTIFIER;
+		}
 		skipPast (token, TOKEN_OPERATOR);
 	}
-	else
+	if (name == NULL)
 	{  /* fake out anonymous structure */
-		name = newToken ();
+		name = newAnonTokenFrom (token, TAG_COMPONENT);
 		name->type = TOKEN_IDENTIFIER;
 		name->tag = TAG_DERIVED_TYPE;
-		vStringCopyS (name->string, "anonymous");
 	}
+	makeFortranTag (name, TAG_DERIVED_TYPE);
 	while (isType (token, TOKEN_IDENTIFIER))
 	{  /* read field names */
 		makeFortranTag (token, TAG_COMPONENT);
@@ -1774,10 +1893,11 @@ static void parseStructureStmt (tokenInfo *const token)
 	while (! isKeyword (token, KEYWORD_end) &&
 		   ! isType (token, TOKEN_EOF))
 		parseFieldDefinition (token);
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_structure token */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 	deleteToken (name);
 }
 
@@ -1917,8 +2037,9 @@ static void parseDerivedTypeDef (tokenInfo *const token)
 		qualifierToken = parseQualifierSpecList (token);
 	if (isType (token, TOKEN_DOUBLE_COLON))
 		readToken (token);
-	if (isType (token, TOKEN_IDENTIFIER))
+	if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
 	{
+		token->type = TOKEN_IDENTIFIER;
 		if (qualifierToken)
 		{
 			if (qualifierToken->parentType)
@@ -1944,10 +2065,11 @@ static void parseDerivedTypeDef (tokenInfo *const token)
 		else
 			skipToNextStatement (token);
 	}
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_type token */
 	skipToToken (token, TOKEN_STATEMENT_END);
-	ancestorPop ();
+	ancestorPop (endLine);
 }
 
 /*  interface-block
@@ -1977,29 +2099,27 @@ static void parseInterfaceBlock (tokenInfo *const token)
 	tokenInfo *name = NULL;
 	Assert (isKeyword (token, KEYWORD_interface));
 	readToken (token);
-	if (isType (token, TOKEN_IDENTIFIER))
-	{
-		makeFortranTag (token, TAG_INTERFACE);
-		name = newTokenFrom (token);
-	}
-	else if (isKeyword (token, KEYWORD_assignment) ||
+	if (isKeyword (token, KEYWORD_assignment) ||
 			 isKeyword (token, KEYWORD_operator))
 	{
 		readToken (token);
 		if (isType (token, TOKEN_PAREN_OPEN))
 			readToken (token);
 		if (isType (token, TOKEN_OPERATOR))
-		{
-			makeFortranTag (token, TAG_INTERFACE);
 			name = newTokenFrom (token);
-		}
+	}
+	else if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
+	{
+		name = newTokenFrom (token);
+		name->type = TOKEN_IDENTIFIER;
 	}
 	if (name == NULL)
 	{
-		name = newToken ();
+		name = newAnonTokenFrom (token, TAG_INTERFACE);
 		name->type = TOKEN_IDENTIFIER;
 		name->tag = TAG_INTERFACE;
 	}
+	makeFortranTag (name, TAG_INTERFACE);
 	ancestorPush (name);
 	while (! isKeyword (token, KEYWORD_end) &&
 		   ! isType (token, TOKEN_EOF))
@@ -2019,10 +2139,11 @@ static void parseInterfaceBlock (tokenInfo *const token)
 				break;
 		}
 	}
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_interface token */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 	deleteToken (name);
 }
 
@@ -2048,16 +2169,18 @@ static void parseEnumBlock (tokenInfo *const token)
 	parseKindSelector (token);
 	if (isType (token, TOKEN_DOUBLE_COLON))
 		readToken (token);
-	if (isType (token, TOKEN_IDENTIFIER))
+	if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
+	{
 		name = newTokenFrom (token);
+		name->type = TOKEN_IDENTIFIER;
+	}
 	if (name == NULL)
 	{
-		name = newToken ();
+		name = newAnonTokenFrom (token, TAG_ENUM);
 		name->type = TOKEN_IDENTIFIER;
 		name->tag = TAG_ENUM;
 	}
-	else
-		makeFortranTag (name, TAG_ENUM);
+	makeFortranTag (name, TAG_ENUM);
 	skipToNextStatement (token);
 	ancestorPush (name);
 	while (! isKeyword (token, KEYWORD_end) &&
@@ -2068,10 +2191,11 @@ static void parseEnumBlock (tokenInfo *const token)
 		else
 			skipToNextStatement (token);
 	}
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_enum token */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 	deleteToken (name);
 }
 
@@ -2260,10 +2384,11 @@ static void parseBlockData (tokenInfo *const token)
 	while (! isKeyword (token, KEYWORD_end) &&
 		   ! isType (token, TOKEN_EOF))
 		skipToNextStatement (token);
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_NONE or KEYWORD_block token */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 }
 
 /*  internal-subprogram-part is
@@ -2386,8 +2511,9 @@ static void parseModule (tokenInfo *const token, bool isSubmodule)
 	}
 
 	readToken (token);
-	if (isType (token, TOKEN_IDENTIFIER))
+	if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
 	{
+		token->type = TOKEN_IDENTIFIER;
 		if (isSubmodule)
 		{
 			attachParentType (token, parentIdentifier);
@@ -2403,10 +2529,11 @@ static void parseModule (tokenInfo *const token, bool isSubmodule)
 	while (! isKeyword (token, KEYWORD_end) &&
 		   ! isType (token, TOKEN_EOF))
 		skipToNextStatement (token);
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be KEYWORD_NONE or KEYWORD_module token */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 
 	if (parentIdentifier)
 		vStringDelete (parentIdentifier);
@@ -2501,9 +2628,10 @@ static void parseSubprogramFull (tokenInfo *const token, const tagType tag)
 			isKeyword (token, KEYWORD_function) ||
 			isKeyword (token, KEYWORD_subroutine));
 	readToken (token);
-	if (isType (token, TOKEN_IDENTIFIER))
+	if (isType (token, TOKEN_IDENTIFIER) || isType (token, TOKEN_KEYWORD))
 	{
 		tokenInfo* name = newTokenFrom (token);
+		token->type = TOKEN_IDENTIFIER;
 		if (tag == TAG_SUBROUTINE ||
 			tag == TAG_PROTOTYPE)
 			name->signature = parseSignature (token);
@@ -2519,12 +2647,13 @@ static void parseSubprogramFull (tokenInfo *const token, const tagType tag)
 	if (isKeyword (token, KEYWORD_contains))
 		parseInternalSubprogramPart (token);
 	/* should be at KEYWORD_end token */
+	unsigned long endLine = token->lineNumber;
 	readSubToken (token);
 	/* secondary token should be one of KEYWORD_NONE, KEYWORD_program,
 	 * KEYWORD_function, KEYWORD_function
 	 */
 	skipToNextStatement (token);
-	ancestorPop ();
+	ancestorPop (endLine);
 }
 
 static tagType subprogramTagType (tokenInfo *const token)
@@ -2621,13 +2750,22 @@ static rescanReason findFortranTags (const unsigned int passCount)
 	tokenInfo *token;
 	rescanReason rescan;
 
-	Assert (passCount < 3);
+	Assert (passCount <= MAX_PASS);
 	token = newToken ();
 
-	FreeSourceForm = (bool) (passCount > 1);
-	Column = 0;
+	currentPass = (fortranPass)passCount;
+	if (currentPass == INIT_PASS)
+		Ungetc = '\0';
+	if (inFreeSourceForm)
+		Free.newline = true;
+	if (inFixedSourceForm)
+	{
+		Fixed.column = 0;
+		Fixed.freeSourceFormFound = false;
+	}
+
 	parseProgramUnit (token);
-	if (FreeSourceFormFound  &&  ! FreeSourceForm)
+	if (inFixedSourceForm && Fixed.freeSourceFormFound)
 	{
 		verbose ("%s: not fixed source form; retry as free source form\n",
 				getInputFileName ());
@@ -2657,6 +2795,9 @@ extern parserDefinition* FortranParser (void)
 #endif
 		NULL
 	};
+	static selectLanguage selectors[] = { selectFortranOrForthByForthMarker,
+						  NULL };
+
 	parserDefinition* def = parserNew ("Fortran");
 	def->kindTable      = FortranKinds;
 	def->kindCount  = ARRAY_SIZE (FortranKinds);
@@ -2665,5 +2806,13 @@ extern parserDefinition* FortranParser (void)
 	def->initialize = initialize;
 	def->keywordTable = FortranKeywordTable;
 	def->keywordCount = ARRAY_SIZE (FortranKeywordTable);
+	def->xtagTable  = FortranXtagTable;
+	def->xtagCount  = ARRAY_SIZE(FortranXtagTable);
+	def->useCork    = CORK_QUEUE;
+
+	def->versionCurrent = 1;
+	def->versionAge = 1;
+	def->selectLanguage = selectors;
+
 	return def;
 }

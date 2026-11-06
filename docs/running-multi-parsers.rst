@@ -71,8 +71,8 @@ and C parsers. You may want to run C parser for the areas from YACC
 parser.
 
 Here YACC parser is a host parser. C parser is a guest parser.
-See "`parsers/yacc.c
-<https://github.com/universal-ctags/ctags/blob/master/parsers/yacc.c>`_".
+See "`optlib/yacc.ctags
+<https://github.com/universal-ctags/ctags/blob/master/optlib/yacc.ctags>`_".
 
 
 Pod/Perl parser combination
@@ -263,6 +263,8 @@ subparser can be chosen only top down way or bottom up ways.
 
 Direction flags
 ,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+
+.. TESTCASE: Units/flags-langdef-directions.r
 
 *Direction flags* specify how a base parser and a subparser work together. You
 can choose directions by putting a long flag after

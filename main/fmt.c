@@ -55,7 +55,7 @@ static int printTagField (fmtSpec* fspec, MIO* fp, const tagEntryInfo * tag)
 {
 	int i;
 	int width = fspec->field.width;
-	int ftype;
+	fieldType ftype;
 	const char* str = NULL;
 
 	ftype = fspec->field.ftype;
@@ -65,7 +65,7 @@ static int printTagField (fmtSpec* fspec, MIO* fp, const tagEntryInfo * tag)
 	else
 	{
 		unsigned int findex;
-		const tagField *f;
+		const tagField *f = NULL;
 
 		for (findex = 0; findex < tag->usedParserFields; findex++)
 		{
@@ -74,8 +74,20 @@ static int printTagField (fmtSpec* fspec, MIO* fp, const tagEntryInfo * tag)
 				break;
 		}
 
-		if (findex == tag->usedParserFields)
+		if ( /* No parser specific field is attached. */
+			f == NULL
+			/* Any parser specific fields attached to the tag doesn't compatible
+			 * with the spec specified in the format string. */
+			||  findex == tag->usedParserFields)
+		{
 			str = "";
+
+			unsigned int dt = getFieldDataType (ftype);
+			if ((dt & FIELDTYPE_STRING) == 0
+				&& (dt & FIELDTYPE_BOOL))
+				str = FIELD_NULL_LETTER_STRING;
+		}
+
 		else if (isFieldEnabled (f->ftype))
 		{
 			unsigned int dt = getFieldDataType (f->ftype);
@@ -83,13 +95,18 @@ static int printTagField (fmtSpec* fspec, MIO* fp, const tagEntryInfo * tag)
 			{
 				str = renderField (f->ftype, tag, findex);
 				if ((dt & FIELDTYPE_BOOL) && str[0] == '\0')
-				{
-					/* TODO: FIELD_NULL_LETTER_STRING */
-					str = "-";
-				}
+					str = FIELD_NULL_LETTER_STRING;
 			}
 			else if (dt & FIELDTYPE_BOOL)
 				str = getFieldName (f->ftype);
+			else if (dt & FIELDTYPE_INTEGER)
+			{
+				long unused;
+
+				str = renderField (f->ftype, tag, findex);
+				if (!strToLong (str, 10, &unused))
+					str = (str[0] == '\0'? "0": "1");
+			}
 			else
 			{
 				/* Not implemented */
@@ -130,7 +147,7 @@ static fmtElement** queueLiteral (fmtElement **last, char *literal)
    Here the two parts are combined with `.'.
 
    If it cannot find a period, it returns LANG_IGNORE and sets
-   fullname to *fieldName.
+   fullName to *fieldName.
 
    If lang part if `*', it returns LANG_AUTO and sets the field
    name part to *fieldName.
@@ -198,7 +215,7 @@ static fmtElement** queueTagField (fmtElement **last, long width, bool truncatio
 	else
 	{
 		language = LANG_IGNORE;
-		ftype = getFieldTypeForOption (field_letter);
+		ftype = getFieldTypeForLetter (field_letter);
 	}
 
 	if (ftype == FIELD_UNKNOWN)

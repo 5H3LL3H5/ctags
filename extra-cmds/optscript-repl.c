@@ -38,7 +38,7 @@ op_renew (OptVM *vm, EsObject *name)
 	return OPT_ERR_QUIT;
 }
 
-int
+static int
 optscript_run (OptVM *vm, char *prompt, void *app_data)
 {
 	int r = 0;
@@ -137,7 +137,7 @@ main(int argc, char **argv)
 		}
 		else if (in)
 		{
-			fprintf (stderr, "too many arugments\n");
+			fprintf (stderr, "too many arguments\n");
 			mio_unref (in);
 			exit (2);
 		}
@@ -211,7 +211,7 @@ main(int argc, char **argv)
 		r = optscript_run (vm, file? NULL: "OPT", &renew);
 		if (renew)
 		{
-			opt_vm_clear (vm);
+			opt_vm_clear (vm, true);
 			opt_vm_dstack_push (vm, dict);
 			renew = false;
 			goto renew;

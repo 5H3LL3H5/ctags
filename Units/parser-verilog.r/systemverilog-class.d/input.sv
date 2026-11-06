@@ -15,7 +15,7 @@ class test;
       enum_bit2='x,
       enum_bit3=2'b01,
       enum_bit4[0:10]=2'b10,
-      enum_bit5 [9:0] = 2'b10 ,
+      enum_bit5 [9:0] = 2'b10
     } enum_complex;
     function mult (a, input b = 0);
         return a * b;
@@ -91,3 +91,21 @@ endclass
 class automatic auto_class;
   logic a;
 endclass : auto_class
+
+class :final test_final_specifier_A;
+  // The final specifier, preceded by a colon, when applied to classes:
+  // specifies that a class shall not be extended.
+endclass
+
+class test_class;
+endclass
+
+virtual class :final test_final_specifier_B;
+  // The final specifier, preceded by a colon, when applied to classes:
+  // specifies that a class shall not be extended.
+endclass
+
+class : final TopPacket extends LinkedPacket;
+  // The final specifier, preceded by a colon, when applied to classes:
+  // specifies that a class shall not be extended.
+endclass

@@ -13,6 +13,7 @@
 #include "vstring.h"
 #include "read.h"
 #include "objpool.h"
+#include "../x-cpreprocessor.h"
 
 #include "cxx_token_chain.h"
 #include "cxx_debug.h"
@@ -31,11 +32,14 @@ static CXXToken *createToken(void *createArg CTAGS_ATTR_UNUSED)
 	// we almost always want a string, and since this token
 	// is being reused..well.. we always want it
 	t->pszWord = vStringNew();
+	t->iCorkIndex = CORK_NIL;
+	t->pSideChain = NULL;
 	return t;
 }
 
 static void deleteToken(CXXToken *token)
 {
+	cxxTokenChainDestroy(token->pSideChain);
 	vStringDelete(token->pszWord);
 	eFree(token);
 }
@@ -53,6 +57,16 @@ static void clearToken(CXXToken *t)
 	t->pChain = NULL;
 	t->pNext = NULL;
 	t->pPrev = NULL;
+
+	t->iCorkIndex = CORK_NIL;
+
+	if(t->pSideChain)
+	{
+		cxxTokenChainDestroy(t->pSideChain);
+		t->pSideChain = NULL;
+	}
+
+	t->bInternalScopeExported = 0;
 }
 
 void cxxTokenAPIInit(void)
@@ -117,10 +131,42 @@ CXXToken * cxxTokenCopy(CXXToken * pToken)
 	pRetToken->oFilePosition = pToken->oFilePosition;
 	pRetToken->eType = pToken->eType;
 	pRetToken->eKeyword = pToken->eKeyword;
-	pToken->bFollowedBySpace = pToken->bFollowedBySpace;
+	pRetToken->bFollowedBySpace = pToken->bFollowedBySpace;
 	vStringCat(pRetToken->pszWord,pToken->pszWord);
+	pRetToken->iCorkIndex = pToken->iCorkIndex;
 
 	return pRetToken;
+}
+
+void cxxTokenReplace(CXXToken *pOriginal, CXXToken *pNew)
+{
+	cxxTokenReplaceWithTokens(pOriginal, pNew, pNew);
+}
+
+CXXToken * cxxTokenReplaceWithTokens(CXXToken *pOriginal,
+									 CXXToken *pHead, CXXToken *pTail)
+{
+	pTail->pNext = pOriginal->pNext;
+	if (pOriginal->pNext)
+		pOriginal->pNext->pPrev = pTail;
+	pOriginal->pNext = NULL;
+
+	pHead->pPrev = pOriginal->pPrev;
+	if (pOriginal->pPrev)
+		pOriginal->pPrev->pNext = pHead;
+	pOriginal->pPrev = NULL;
+
+	return pHead;
+}
+
+CXXToken * cxxTokenReplaceWithTokensInChain(CXXToken *pOriginal,
+											CXXTokenChain *pChain)
+{
+	CXXToken * pHead = pChain->pHead;
+	CXXToken * pTail = pChain->pTail;
+	cxxTokenChainInit(pChain);
+
+	return cxxTokenReplaceWithTokens(pOriginal, pHead, pTail);
 }
 
 CXXToken * cxxTokenCreateKeyword(int iLineNumber,MIOPos oFilePosition,CXXKeyword eKeyword)
@@ -137,15 +183,15 @@ CXXToken * cxxTokenCreateKeyword(int iLineNumber,MIOPos oFilePosition,CXXKeyword
 }
 
 
-CXXToken * cxxTokenCreateAnonymousIdentifier(unsigned int uTagKind)
+CXXToken * cxxTokenCreateAnonymousIdentifier(unsigned int uTagKind, const char *szPrefix)
 {
 	CXXToken * t = cxxTokenCreate();
 
-	anonGenerate (t->pszWord, "__anon", uTagKind);
+	anonGenerate (t->pszWord, szPrefix? szPrefix: "__anon", uTagKind);
 	t->eType = CXXTokenTypeIdentifier;
 	t->bFollowedBySpace = true;
-	t->iLineNumber = getInputLineNumber();
-	t->oFilePosition = getInputFilePosition();
+	t->iLineNumber = cppGetInputLineNumber();
+	t->oFilePosition = cppGetInputFilePosition();
 
 	return t;
 }

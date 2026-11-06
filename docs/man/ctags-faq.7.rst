@@ -6,7 +6,7 @@ ctags-faq
 
 Universal Ctags FAQ
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 7
 
@@ -21,7 +21,7 @@ DESCRIPTION
 .. TODO: https://github.com/universal-ctags/ctags/issues/2312
 	#1421: feature: clean up stale tags when appending (`-a`)
 	#2356: can't pre-process the macro but it works with Exuberant Ctags 5.8
-	#2540: C/C++：conditional compilation like #ifdef will cause parse errror
+	#2540: C/C++：conditional compilation like #ifdef will cause parse error
 
 What is the difference between Universal Ctags and Exuberant Ctags?
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -342,7 +342,7 @@ Does Universal Ctags support Unicode file names?
 Yes, Unicode file names are supported on unix-like platforms (Linux, macOS,
 Cygwin, etc.).
 
-However, on Windows, you need to use Windows 10 version 1903 or later to use
+However, on MS Windows, you need to use Windows 10 version 1903 or later to use
 Unicode file names. (This is an experimental feature, though.) On older versions
 on Windows, Universal Ctags only support file names represented in the current
 code page. If you still want to use Unicode file names on them, use Cygwin or

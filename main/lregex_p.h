@@ -19,9 +19,19 @@
 *   INCLUDE FILES
 */
 #include "general.h"
+#include "field.h"
+#include "flags_p.h"
 #include "kind_p.h"
 #include "lregex.h"
 #include "parse.h"
+
+#include <regex.h>
+
+/*
+*   MACRO DEFINITIONS
+*/
+/* Back-references \0 through \9 */
+#define BACK_REFERENCE_COUNT 10
 
 /*
 *   DATA DECLARATIONS
@@ -33,6 +43,32 @@ enum regexParserType {
 };
 
 struct lregexControlBlock;
+
+typedef struct sRegexCompiledCode {
+	struct regexBackend *backend;
+	void * code;
+} regexCompiledCode;
+
+struct regexBackend {
+	const char *name;
+	flagDefinition *fdefs;
+	unsigned int fdef_count;
+
+	void              (* set_icase_flag) (int *);
+	regexCompiledCode (* compile)     (struct regexBackend *,
+									   const char* const,
+									   int);
+	int               (* match)       (struct regexBackend *,
+									   void *, const char *, size_t,
+									   regmatch_t[BACK_REFERENCE_COUNT]);
+	void              (* delete_code) (void *);
+};
+
+struct flagDefsDescriptor {
+	struct regexBackend *backend;
+	int flags;
+	enum regexParserType regptype;
+};
 
 /*
 *   FUNCTION PROTOTYPES
@@ -55,7 +91,11 @@ extern void addTagMultiTableRegex(struct lregexControlBlock *lcb,
 								  const char* const name, const char* const kinds, const char* const flags,
 								  bool *disabled);
 
-extern bool matchRegex (struct lregexControlBlock *lcb, const vString* const line);
+extern bool lregexControlBlockHasAny(struct lregexControlBlock *lcb);
+
+extern bool matchRegex (struct lregexControlBlock *lcb, const vString* const line, bool postrun);
+extern bool regexIsPostRun (struct lregexControlBlock *lcb);
+
 extern bool doesExpectCorkInRegex (struct lregexControlBlock *lcb);
 extern void addCallbackRegex (struct lregexControlBlock *lcb,
 							  const char* const regex,
@@ -76,8 +116,20 @@ extern void extendRegexTable (struct lregexControlBlock *lcb, const char *src, c
 extern void initRegexOptscript (void);
 extern void listRegexOpscriptOperators (FILE *fp);
 
+extern bool installOptscriptFieldAccessor (fieldType ftype);
+
 extern void addOptscriptToHook (struct lregexControlBlock *lcb, enum scriptHook hook, const char *code);
+extern void propagateParamToOptscript (struct lregexControlBlock *lcb, const char *param, const char *value);
 
 extern void printMultitableStatistics (struct lregexControlBlock *lcb);
+
+extern void basic_regex_flag_short (char c, void* data);
+extern void basic_regex_flag_long (const char* const s, const char* const unused, void* data);
+extern void extend_regex_flag_short (char c, void* data);
+extern void extend_regex_flag_long (const char* const s, const char* const unused, void* data);
+#ifdef HAVE_PCRE2
+extern void pcre2_regex_flag_short (char c, void* data);
+extern void pcre2_regex_flag_long (const char* const s, const char* const unused, void* data);
+#endif
 
 #endif	/* CTAGS_MAIN_LREGEX_PRIVATEH */

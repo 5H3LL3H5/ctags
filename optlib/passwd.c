@@ -37,11 +37,19 @@ extern parserDefinition* PasswdParser (void)
 		  .enabled     = true,
 		  .name        = "home",
 		  .description = "home directory",
+		  .dataType = FIELDTYPE_SCRIPTABLE|FIELDTYPE_STRING,
+		  .isValueAvailable = isValueAvailableGeneric,
+		  .getValueObject = getFieldValueGeneric,
+		  .setValueObject = setFieldValueGeneric,
 		},
 		{
 		  .enabled     = true,
 		  .name        = "shell",
 		  .description = "login shell",
+		  .dataType = FIELDTYPE_SCRIPTABLE|FIELDTYPE_STRING,
+		  .isValueAvailable = isValueAvailableGeneric,
+		  .getValueObject = getFieldValueGeneric,
+		  .setValueObject = setFieldValueGeneric,
 		},
 	};
 	static tagRegexTable PasswdTagRegexTable [] = {
@@ -52,6 +60,8 @@ extern parserDefinition* PasswdParser (void)
 
 	parserDefinition* const def = parserNew ("Passwd");
 
+	def->versionCurrent= 0;
+	def->versionAge    = 0;
 	def->enabled       = true;
 	def->extensions    = extensions;
 	def->patterns      = patterns;

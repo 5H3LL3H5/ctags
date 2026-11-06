@@ -3,9 +3,9 @@ ACLOCAL_AMFLAGS = -I m4
 GNULIB_DIR = gnulib
 GNULIB_CPPFLAGS = -I$(top_builddir)/$(GNULIB_DIR) -I$(top_srcdir)/$(GNULIB_DIR)
 GNULIB_LIBS = $(GNULIB_DIR)/libgnu.a $(LIBPTHREAD)
-$(GNULIB_DIR)/libgnu.a:
-	$(MAKE) -C $(GNULIB_DIR) libgnu.a
-SUBDIRS = $(GNULIB_DIR)
+$(GNULIB_LIBS):
+	$(MAKE) -C $(GNULIB_DIR) all
+SUBDIRS = $(GNULIB_DIR) . man
 
 include $(top_srcdir)/source.mak
 
@@ -16,66 +16,131 @@ PACKCC_FILES = misc/packcc/.gitignore   \
 	       \
 	       $(NULL)
 
-EXTRA_DIST   = README.md autogen.sh \
-	       makefiles/list-optlib2c-input.mak misc/optlib2c \
+VALIDATOR_SH = \
+	     misc/validators/g++-common.sh			\
+	     misc/validators/gfortran-common.sh			\
+	     misc/validators/tsc-common.sh			\
+	     misc/validators/validator-c			\
+	     misc/validators/validator-cxx03			\
+	     misc/validators/validator-cxx11			\
+	     misc/validators/validator-cxx17			\
+	     misc/validators/validator-cxx20+module		\
+	     misc/validators/validator-fortran+dollar-ok	\
+	     misc/validators/validator-gnat			\
+	     misc/validators/validator-jq			\
+	     misc/validators/validator-KNOWN-INVALIDATION	\
+	     misc/validators/validator-node			\
+	     misc/validators/validator-NONE			\
+	     misc/validators/validator-puppet			\
+	     misc/validators/validator-python			\
+	     misc/validators/validator-ruby			\
+	     misc/validators/validator-svlint			\
+	     misc/validators/validator-swipl			\
+	     misc/validators/validator-tsc			\
+	     misc/validators/validator-tsc-es2015		\
+	     \
+	     $(NULL)
+
+DEBUGGENS = \
+	    \
+	    misc/debuggen/README misc/debuggen/libdebuggen.sh \
+	    \
+	    misc/debuggen/rust.sh \
+	    misc/debuggen/typescript.sh \
+	    \
+	    $(NULL)
+
+EXTRA_DIST   = README.md NEWS.rst autogen.sh \
+	       misc/optlib2c \
+	       misc/enumstr.sh \
+	       misc/gencxxtypedumper.sh \
+	       $(DEBUGGENS) \
 	       .ctags.d/exclusion.ctags .dir-locals.el .editorconfig .gdbinit .gitignore \
 	       .indent.pro .uncrustify.cfg \
 	       misc/ctags-optlib-mode.el \
 	       misc/mk-interactive-request.sh misc/roundtrip misc/tinst \
 	       $(PACKCC_FILES) \
-	       misc/validators/validator-jq \
-	       misc/validators/validator-KNOWN-INVALIDATION \
-	       misc/validators/validator-NONE \
-	       misc/validators/validator-puppet \
+	       $(VALIDATOR_SH) \
 	       $(WIN32_HEADS) $(WIN32_SRCS) mk_mingw.mak mk_mvc.mak \
 	       win32/mkstemp/COPYING.MinGW-w64-runtime.txt \
 	       win32/ctags.rc win32/ctags.exe.manifest win32/resource.h \
 	       win32/ctags_vs2013.sln \
 	       win32/ctags_vs2013.vcxproj win32/ctags_vs2013.vcxproj.filters \
+	       win32/ctags_vs2013.vcxproj.in win32/ctags_vs2013.vcxproj.filters.in \
+	       win32/GNUmakefile \
 	       win32/gen-repoinfo.bat \
-	       man/Makefile man/README man/tags.5.rst \
-	       makefiles/list-txt2cstr-input.mak misc/txt2cstr \
-	       $(PEG_INPUT) $(OPTLIB2C_INPUT) $(TXT2CSTR_INPUT) \
+	       misc/txt2cstr \
+	       $(PEG_INPUT) $(OPTLIB2C_INPUT) $(OPTLIB2C_PCRE2_INPUT) $(TXT2CSTR_INPUT) \
+	       misc/universal-ctags.svg \
+	       misc/review \
 	       docs Tmain Units m4/gnulib-cache.m4
+
+if HAVE_PEGOF
+# Keeping intermediate files for debugging pegof and u-ctags buildsys.
+EXTRA_DIST   += $(PEGO_INTERMEDIATE)
+endif
 
 CLEANFILES =
 MOSTLYCLEANFILES =
+MAINTAINERCLEANFILES = autom4te.cache
 
+# for distcheck
 clean-local:
-	rm -f packcc$(BUILD_EXEEXT)
 	@if test "$(top_srcdir)" != "$(top_builddir)"; then \
-		rm -rf $(OPTLIB2C_SRCS); \
+		rm -rf $(OPTLIB2C_SRCS) $(OPTLIB2C_PCRE2_SRCS); \
 		rm -rf $(TXT2CSTR_SRCS); \
+	else \
+		$(MAKE) -C docs clean; \
 	fi
 
+maintainer-clean-local:
+	rm -rf .deps misc/packcc/.dirstamp
+
 bin_PROGRAMS = ctags
-noinst_LIBRARIES = libctags.a
+noinst_LIBRARIES =
+noinst_LIBRARIES += libctags.a
+noinst_LIBRARIES += libutil.a
 
-noinst_PROGRAMS =
-noinst_PROGRAMS += mini-geany
+noinst_PROGRAMS = utiltest
 
+AM_LDFLAGS = $(EXTRA_LDFLAGS)
+
+# packcc always uses native compiler even when cross-compiling.
+# packcc cannot use the standard Automake rule.
 PACKCC_CPPFLAGS_FOR_BUILD  = -fsigned-char
 if HAVE_STRNLEN_FOR_BUILD
 PACKCC_CPPFLAGS_FOR_BUILD += -DPCC_USE_SYSTEM_STRNLEN
 endif
 
 PACKCC = $(top_builddir)/packcc$(BUILD_EXEEXT)
+CLEANFILES += $(PACKCC)
 
 cc4b_verbose = $(cc4b_verbose_@AM_V@)
 cc4b_verbose_ = $(cc4b_verbose_@AM_DEFAULT_V@)
 cc4b_verbose_0 = @echo CC4BUILD "  $@";
-$(PACKCC): $(top_srcdir)/misc/packcc/src/packcc.c
-	$(cc4b_verbose)$(CC_FOR_BUILD) $(CFLAGS_FOR_BUILD) $(CPPFLAGS_FOR_BUILD) $(PACKCC_CPPFLAGS_FOR_BUILD) $(LDFLAGS_FOR_BUILD) -o $@ $(top_srcdir)/misc/packcc/src/packcc.c
+$(PACKCC): $(srcdir)/$(PACKCC_SRC)
+	$(cc4b_verbose)$(CC_FOR_BUILD) $(CFLAGS_FOR_BUILD) $(CPPFLAGS_FOR_BUILD) $(PACKCC_CPPFLAGS_FOR_BUILD) $(LDFLAGS_FOR_BUILD) -o $@ $(srcdir)/$(PACKCC_SRC)
 
 if USE_READCMD
 bin_PROGRAMS+= readtags
 readtags_CPPFLAGS = -I. -I$(srcdir) -I$(srcdir)/main -I$(srcdir)/libreadtags
-readtags_CFLAGS = $(COVERAGE_CFLAGS) $(WARNING_CFLAGS)
+if ENABLE_DEBUGGING
+readtags_CPPFLAGS+= $(DEBUG_CPPFLAGS)
+endif
+readtags_CFLAGS = $(EXTRA_CFLAGS) $(WARNING_CFLAGS) $(COVERAGE_CFLAGS)
 dist_readtags_SOURCES = $(READTAGS_SRCS) $(READTAGS_HEADS)
 readtags_CPPFLAGS += $(GNULIB_CPPFLAGS)
-readtags_CPPFLAGS += -DREADTAGS_DSL -I$(srcdir)/dsl
-readtags_LDADD = $(GNULIB_LIBS)
+readtags_CPPFLAGS += -I$(srcdir)/dsl
+readtags_CPPFLAGS += -DHAVE_CTAGS_INLINE_H
+readtags_LDADD  =
+readtags_LDADD += $(GNULIB_LIBS)
+readtags_LDADD += libutil.a
 dist_readtags_SOURCES += $(READTAGS_DSL_SRCS) $(READTAGS_DSL_HEADS)
+endif
+
+if HAVE_PCRE2
+PARSER_SRCS += $(PCRE2_SRCS) $(OPTLIB2C_PCRE2_SRCS)
+PARSER_HEADS += $(PCRE2_HEADS)
 endif
 
 if HAVE_LIBXML
@@ -95,12 +160,37 @@ endif
 
 PARSER_HEADS += $(PEG_EXTRA_HEADS)
 
+libutil_a_CPPFLAGS = -I$(srcdir) -I$(srcdir)/main
+libutil_a_CFLAGS   =
+libutil_a_CFLAGS  += $(EXTRA_CFLAGS)
+libutil_a_CFLAGS  += $(WARNING_CFLAGS)
+libutil_a_CFLAGS  += $(COVERAGE_CFLAGS)
+if ENABLE_DEBUGGING
+libutil_a_CPPFLAGS+= $(DEBUG_CPPFLAGS)
+endif
+dist_libutil_a_SOURCES = $(UTIL_HEADS) $(UTIL_SRCS)
+
+utiltest_CPPFLAGS   = -I$(srcdir) -I$(srcdir)/main
+utiltest_CFLAGS     =
+utiltest_CFLAGS    += $(EXTRA_CFLAGS)
+utiltest_CFLAGS    += $(WARNING_CFLAGS)
+utiltest_CFLAGS    += $(COVERAGE_CFLAGS)
+if ENABLE_DEBUGGING
+utiltest_CPPFLAGS  += $(DEBUG_CPPFLAGS)
+endif
+utiltest_LDADD  =
+utiltest_LDADD += libutil.a
+dist_utiltest_SOURCES = $(UTILTEST_HEADS) $(UTILTEST_SRCS)
+
 libctags_a_CPPFLAGS = -I. -I$(srcdir) -I$(srcdir)/main -I$(srcdir)/dsl -I$(srcdir)/peg -DHAVE_PACKCC
 if ENABLE_DEBUGGING
 libctags_a_CPPFLAGS+= $(DEBUG_CPPFLAGS)
 endif
 if HAVE_STRNLEN
 libctags_a_CPPFLAGS += -DUSE_SYSTEM_STRNLEN
+endif
+if HAVE_PEGOF
+libctags_a_CPPFLAGS += -DHAVE_PEGOF
 endif
 libctags_a_CPPFLAGS+= $(GNULIB_CPPFLAGS)
 libctags_a_CPPFLAGS+= -DHAVE_REPOINFO_H
@@ -114,11 +204,13 @@ libctags_a_CFLAGS  += $(LIBXML_CFLAGS)
 libctags_a_CFLAGS  += $(JANSSON_CFLAGS)
 libctags_a_CFLAGS  += $(LIBYAML_CFLAGS)
 libctags_a_CFLAGS  += $(SECCOMP_CFLAGS)
+libctags_a_CFLAGS  += $(PCRE2_CFLAGS)
 
 nodist_libctags_a_SOURCES = $(REPOINFO_HEADS) $(PEG_SRCS) $(PEG_HEADS)
 BUILT_SOURCES = $(REPOINFO_HEADS)
 CLEANFILES += $(REPOINFO_HEADS) $(PEG_SRCS) $(PEG_HEADS)
-EXTRA_libctags_a_DEPENDENCIES = $(REPOINFO_HEADS)
+EXTRA_libctags_a_DEPENDENCIES = $(GNULIB_LIBS)
+$(REPOINFO_SRCS): $(REPOINFO_HEADS)
 repoinfo_verbose = $(repoinfo_verbose_@AM_V@)
 repoinfo_verbose_ = $(repoinfo_verbose_@AM_DEFAULT_V@)
 repoinfo_verbose_0 = @echo REPOINFO "  $@";
@@ -139,10 +231,14 @@ optlib2c_verbose = $(optlib2c_verbose_@AM_V@)
 optlib2c_verbose_ = $(optlib2c_verbose_@AM_DEFAULT_V@)
 optlib2c_verbose_0 = @echo OPTLIB2C "  $@";
 OPTLIB2C = $(srcdir)/misc/optlib2c
+OPTLIB2C_DIR = optlib
 SUFFIXES += .ctags
 .ctags.c:
 	$(optlib2c_verbose)$(OPTLIB2C) $< > $@
 $(OPTLIB2C_SRCS): $(OPTLIB2C) Makefile
+if HAVE_PCRE2
+$(OPTLIB2C_PCRE2_SRCS): $(OPTLIB2C) Makefile
+endif
 endif
 
 if RUN_TXT2CSTR
@@ -150,6 +246,7 @@ txt2cstr_verbose = $(txt2cstr_verbose_@AM_V@)
 txt2cstr_verbose_ = $(txt2cstr_verbose_@AM_DEFAULT_V@)
 txt2cstr_verbose_0 = @echo TXT2CSTR "  $@";
 TXT2CSTR = $(srcdir)/misc/txt2cstr
+TXT2CSTR_DIR = main
 SUFFIXES += .ps
 .ps.c:
 	$(txt2cstr_verbose)$(TXT2CSTR) $< > $@
@@ -160,10 +257,27 @@ packcc_verbose = $(packcc_verbose_@AM_V@)
 packcc_verbose_ = $(packcc_verbose_@AM_DEFAULT_V@)
 packcc_verbose_0 = @echo PACKCC "    $@";
 SUFFIXES += .peg
+
+if HAVE_PEGOF
+pegof_verbose = $(pegof_verbose_@AM_V@)
+pegof_verbose_ = $(pegof_verbose_@AM_DEFAULT_V@)
+pegof_verbose_0 = @echo PEGOF "    $@";
+SUFFIXES += .pego
+
+PEGOF_FLAGS = -O all
+.peg.pego:
+	$(pegof_verbose)$(PEGOF) $(PEGOF_FLAGS) -o $(top_builddir)/peg/$(@F) -i "$<"
+.pego.c:
+	$(packcc_verbose)$(PACKCC) -o $(top_builddir)/peg/$(*F) $(top_builddir)/peg/$(<F)
+.pego.h:
+	$(packcc_verbose)$(PACKCC) -o $(top_builddir)/peg/$(*F) $(top_builddir)/peg/$(<F)
+else
 .peg.c:
 	$(packcc_verbose)$(PACKCC) -o $(top_builddir)/peg/$(*F) "$<"
 .peg.h:
 	$(packcc_verbose)$(PACKCC) -o $(top_builddir)/peg/$(*F) "$<"
+endif
+
 # You cannot use $(PACKCC) as a target name here.
 $(PEG_SRCS) $(PEG_HEADS): $(PACKCC) Makefile
 dist_libctags_a_SOURCES = $(ALL_LIB_HEADS) $(ALL_LIB_SRCS)
@@ -177,6 +291,7 @@ ctags_LDADD += $(JANSSON_LIBS)
 ctags_LDADD += $(LIBYAML_LIBS)
 ctags_LDADD += $(SECCOMP_LIBS)
 ctags_LDADD += $(ICONV_LIBS)
+ctags_LDADD += $(PCRE2_LIBS)
 dist_ctags_SOURCES = $(CMDLINE_HEADS) $(CMDLINE_SRCS)
 
 if HOST_MINGW
@@ -191,6 +306,7 @@ $(RES_OBJ): win32/ctags.rc win32/ctags.exe.manifest win32/resource.h
 MOSTLYCLEANFILES += $(RES_OBJ)
 endif
 
+noinst_PROGRAMS += mini-geany
 mini_geany_CPPFLAGS = $(libctags_a_CPPFLAGS)
 mini_geany_CFLAGS = $(libctags_a_CFLAGS)
 mini_geany_LDADD  = libctags.a
@@ -200,6 +316,7 @@ mini_geany_LDADD += $(JANSSON_LIBS)
 mini_geany_LDADD += $(LIBYAML_LIBS)
 mini_geany_LDADD += $(SECCOMP_LIBS)
 mini_geany_LDADD += $(ICONV_LIBS)
+mini_geany_LDADD += $(PCRE2_LIBS)
 mini_geany_SOURCES = $(MINI_GEANY_HEADS) $(MINI_GEANY_SRCS)
 
 bin_PROGRAMS += optscript
@@ -213,6 +330,7 @@ optscript_LDADD += $(JANSSON_LIBS)
 optscript_LDADD += $(LIBYAML_LIBS)
 optscript_LDADD += $(SECCOMP_LIBS)
 optscript_LDADD += $(ICONV_LIBS)
+optscript_LDADD += $(PCRE2_LIBS)
 optscript_SOURCES = $(OPTSCRIPT_SRCS)
 
 if INSTALL_ETAGS
@@ -236,38 +354,3 @@ dist-hook:
 include $(top_srcdir)/makefiles/testing.mak
 
 include $(top_srcdir)/makefiles/help.mak
-
-if HAVE_RST2MAN
-# TODO: the list of man pages should be shared with man/Makefile.
-man_MANS = \
-	man/ctags.1 \
-	man/readtags.1 \
-	\
-	man/tags.5 \
-	\
-	man/ctags-client-tools.7 \
-	man/ctags-incompatibilities.7 \
-	man/ctags-optlib.7 \
-	man/ctags-faq.7 \
-	\
-	man/ctags-lang-iPythonCell.7 \
-	man/ctags-lang-julia.7 \
-	man/ctags-lang-python.7 \
-	man/ctags-lang-verilog.7 \
-	man/ctags-lang-inko.7 \
-	man/ctags-lang-r.7 \
-	man/ctags-lang-sql.7 \
-	\
-	$(NULL)
-rst2man_verbose = $(rst2man_verbose_@AM_V@)
-rst2man_verbose_ = $(rst2man_verbose_@AM_DEFAULT_V@)
-rst2man_verbose_0 = @echo RST2MAN "   $@";
-SUFFIXES += .1.rst .1 .5.rst .5 .7.rst .7
-.1.rst.1:
-	$(rst2man_verbose)$(RST2MAN) $(RST2MAN_OPTIONS) $< $@
-.5.rst.5:
-	$(rst2man_verbose)$(RST2MAN) $(RST2MAN_OPTIONS) $< $@
-.7.rst.7:
-	$(rst2man_verbose)$(RST2MAN) $(RST2MAN_OPTIONS) $< $@
-CLEANFILES += $(man_MANS)
-endif

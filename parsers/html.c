@@ -19,6 +19,9 @@
 #include "routines.h"
 #include "keyword.h"
 #include "promise.h"
+#include "trace.h"
+
+#include "x-jscript.h"
 
 /* The max. number of nested elements - prevents further recursion if the limit
  * is exceeded and avoids stack overflow for invalid input containing too many
@@ -29,9 +32,13 @@
 typedef enum {
 	K_ANCHOR,
 	K_CLASS,
+	K_TITLE,
 	K_HEADING1,
 	K_HEADING2,
 	K_HEADING3,
+	K_HEADING4,
+	K_HEADING5,
+	K_HEADING6,
 	K_STYELSHEET,
 	K_ID,
 	K_SCRIPT,
@@ -66,9 +73,16 @@ static kindDefinition HtmlKinds [] = {
 	{ true, 'a', "anchor",		"named anchors" },
 	{ true, 'c', "class",		"classes",
 	  .referenceOnly = true, ATTACH_ROLES (ClassRoles)},
+	{ true, 't', "title",		"titles" },
 	{ true, 'h', "heading1",	"H1 headings" },
 	{ true, 'i', "heading2",	"H2 headings" },
 	{ true, 'j', "heading3",	"H3 headings" },
+	{ true, 'k', "heading4",	"H4 headings",
+	  .version = 1 },
+	{ true, 'l', "heading5",	"H5 headings",
+	  .version = 1 },
+	{ true, 'm', "heading6",	"H6 headings",
+	  .version = 1, },
 	{ true, 'C', "stylesheet",	"stylesheets",
 	  .referenceOnly = true, ATTACH_ROLES (StylesheetRoles)},
 	{ true, 'I', "id",			"identifiers" },
@@ -77,9 +91,19 @@ static kindDefinition HtmlKinds [] = {
 };
 
 typedef enum {
+	/* The order starting from "title" to "h6" should
+	 * not be changed.
+	 *
+	 */
+	KEYWORD_heading_start,
+	KEYWORD_title = KEYWORD_heading_start,
 	KEYWORD_h1,
 	KEYWORD_h2,
 	KEYWORD_h3,
+	KEYWORD_h4,
+	KEYWORD_h5,
+	KEYWORD_h6,
+	KEYWORD_heading_end = KEYWORD_h6,
 	KEYWORD_a,
 	KEYWORD_script,
 	KEYWORD_style,
@@ -110,9 +134,13 @@ typedef enum {
 } keywordId;
 
 static const keywordTable HtmlKeywordTable[] = {
+	{"title", KEYWORD_title},
 	{"h1", KEYWORD_h1},
 	{"h2", KEYWORD_h2},
 	{"h3", KEYWORD_h3},
+	{"h4", KEYWORD_h4},
+	{"h5", KEYWORD_h5},
+	{"h6", KEYWORD_h6},
 	{"a", KEYWORD_a},
 	{"script", KEYWORD_script},
 	{"style", KEYWORD_style},
@@ -147,8 +175,8 @@ typedef enum {
 	TOKEN_NAME,			/* tag and attribute names */
 	TOKEN_STRING,		/* single- or double-quoted attribute value */
 	TOKEN_TEXT,
-	TOKEN_TAG_START,	/* <  */
-	TOKEN_TAG_START2,	/* </ */
+	TOKEN_OPEN_TAG_START,	/* <  */
+	TOKEN_CLOSE_TAG_START,	/* </ */
 	TOKEN_TAG_END,		/* >  */
 	TOKEN_TAG_END2,		/* /> */
 	TOKEN_EQUAL,
@@ -157,14 +185,14 @@ typedef enum {
 } tokenType;
 
 #ifdef DEBUG
-const char *tokenTypes[] = {
+static const char *tokenTypes[] = {
 #define E(X) [TOKEN_##X] = #X
 	E(EOF),
 	E(NAME),
 	E(STRING),
 	E(TEXT),
-	E(TAG_START),
-	E(TAG_START2),
+	E(OPEN_TAG_START),
+	E(CLOSE_TAG_START),
 	E(TAG_END),
 	E(TAG_END2),
 	E(EQUAL),
@@ -183,20 +211,17 @@ typedef struct {
 static int Lang_html;
 
 
-static void readTag (tokenInfo *token, vString *text, int depth);
+static void readTag (tokenInfo *token, vString *text, int depth, bool asJSX);
 
-#ifdef DEBUG
-#if 0
-static void dumpToken (tokenInfo *token, const char *context, const char* extra_context)
+static void skipOtherScriptContent (const int delimiter);
+
+static void skipJavaScriptObjectExpression (void)
 {
-	fprintf (stderr, "[%7s] %-20s@%s.%s\n",
-			 tokenTypes[token->type], vStringValue(token->string),
-			 context, extra_context? extra_context: "_");
+	ungetcToInputFile ('{');
+	javaScriptSkipObjectExpression ();
 }
-#endif
-#endif
 
-static void readTokenText (tokenInfo *const token, bool collectText)
+static void readTokenText (tokenInfo *const token, bool collectText, bool asJSX)
 {
 	int c;
 	int lastC = 'X';  /* whatever non-space character */
@@ -218,6 +243,15 @@ getNextChar:
 			token->type = TOKEN_TEXT;
 			break;
 
+		case '{':
+			if (asJSX)
+			{
+				/* If we find {...} in HTML in JSXElement,
+				 * replace it with a whitespace ' '. */
+				skipJavaScriptObjectExpression ();
+				c = ' ';
+			}
+			/* FALLTHROUGH */
 		default:
 			if (collectText)
 			{
@@ -234,7 +268,59 @@ getNextChar:
 	}
 }
 
-static void readToken (tokenInfo *const token, bool skipComments)
+static void readTokenInScript (tokenInfo *const token)
+{
+	int c;
+
+	vStringClear (token->string);
+
+	c = getcFromInputFile ();
+	while (isspace (c))
+		c = getcFromInputFile ();
+
+	switch (c)
+	{
+		case EOF:
+			token->type = TOKEN_EOF;
+			break;
+
+		case '<':
+		{
+			int d = getcFromInputFile ();
+			if (d == '/')
+				token->type = TOKEN_CLOSE_TAG_START;
+			else
+			{
+				ungetcToInputFile (d);
+				token->type = TOKEN_OTHER;
+			}
+			break;
+		}
+		default:
+		{
+			while (!isspace (c) && c != '<' && c != '>' && c != '/' &&
+				   c != '=' && c != '\'' && c != '"' && c != EOF)
+			{
+				vStringPut (token->string, tolower (c));
+				c = getcFromInputFile ();
+			}
+
+			if (vStringLength (token->string) == 0)
+				token->type = TOKEN_OTHER;
+			else
+			{
+				token->type = TOKEN_NAME;
+				if (c != EOF)
+					ungetcToInputFile (c);
+			}
+			break;
+		}
+	}
+
+	TRACE_PRINT("token (in script): %s (%s)", tokenTypes[token->type], vStringValue (token->string));
+}
+
+static void readToken (tokenInfo *const token, bool skipComments, bool asJSX)
 {
 	int c;
 
@@ -255,7 +341,6 @@ getNextChar:
 		case '<':
 		{
 			int d = getcFromInputFile ();
-
 			if (d == '!')
 			{
 				d = getcFromInputFile ();
@@ -287,13 +372,16 @@ getNextChar:
 				token->type = TOKEN_OTHER;
 			}
 			else if (d == '?')
-				token->type = TOKEN_OTHER;
+			{
+				skipOtherScriptContent(d);
+				goto getNextChar;
+			}
 			else if (d == '/')
-				token->type = TOKEN_TAG_START2;
+				token->type = TOKEN_CLOSE_TAG_START;
 			else
 			{
 				ungetcToInputFile (d);
-				token->type = TOKEN_TAG_START;
+				token->type = TOKEN_OPEN_TAG_START;
 			}
 			break;
 		}
@@ -331,6 +419,15 @@ getNextChar:
 			break;
 		}
 
+		case '{':
+			if (asJSX)
+			{
+				token->type = TOKEN_STRING;
+				skipJavaScriptObjectExpression ();
+				break;
+			}
+		/* FALLTHROUGH */
+
 		default:
 		{
 			do
@@ -346,6 +443,8 @@ getNextChar:
 			break;
 		}
 	}
+
+	TRACE_PRINT("token: %s (%s)", tokenTypes[token->type], vStringValue (token->string));
 }
 
 static void appendText (vString *text, vString *appendedText)
@@ -361,55 +460,61 @@ static void appendText (vString *text, vString *appendedText)
 	}
 }
 
-static bool readTagContent (tokenInfo *token, vString *text, long *line, long *lineOffset, int depth)
+static bool readTagContent (tokenInfo *token, vString *text, long *line, long *column, int depth, bool asJSX)
 {
+	TRACE_ENTER();
+
 	tokenType type;
 
-	readTokenText (token, text != NULL);
+	readTokenText (token, text != NULL, asJSX);
 	appendText (text, token->string);
 
 	do
 	{
 		*line = getInputLineNumber ();
-		*lineOffset = getInputLineOffset ();
-		readToken (token, false);
+		*column = getInputColumnNumber ();
+		readToken (token, false, asJSX);
 		type = token->type;
-		if (type == TOKEN_TAG_START)
-			readTag (token, text, depth + 1);
-		if (type == TOKEN_COMMENT || type == TOKEN_TAG_START)
+		if (type == TOKEN_OPEN_TAG_START)
+			readTag (token, text, depth + 1, asJSX);
+		if (type == TOKEN_COMMENT || type == TOKEN_OPEN_TAG_START)
 		{
-			readTokenText (token, text != NULL);
+			readTokenText (token, text != NULL, asJSX);
 			appendText (text, token->string);
 		}
 	}
-	while (type == TOKEN_COMMENT || type == TOKEN_TAG_START);
+	while (type == TOKEN_COMMENT || type == TOKEN_OPEN_TAG_START);
 
-	return type == TOKEN_TAG_START2;
+	TRACE_LEAVE_TEXT("is_close_tag? %d", type == TOKEN_CLOSE_TAG_START);
+
+	return type == TOKEN_CLOSE_TAG_START;
 }
 
-static bool skipScriptContent (tokenInfo *token, long *line, long *lineOffset)
+static bool skipScriptContent (tokenInfo *token, long *line, long *column)
 {
+	TRACE_ENTER();
+
 	bool found_start = false;
 	bool found_script = false;
 
 	long line_tmp[2] = {0};
-	long lineOffset_tmp[2] = {0};
+	long column_tmp[2] = {0};
 
 	tokenType type;
 
 	do
 	{
 		line_tmp[0] = getInputLineNumber ();
-		lineOffset_tmp[0] = getInputLineOffset ();
+		column_tmp[0] = getInputColumnNumber ();
 
-		readToken (token, false);
+		readTokenInScript (token);
 		type = token->type;
 
-		if (type == TOKEN_TAG_START2)
+		if (type == TOKEN_CLOSE_TAG_START)
 		{
 			found_start = true;
 			line_tmp[1] = line_tmp[0];
-			lineOffset_tmp[1] = lineOffset_tmp[0];
+			column_tmp[1] = column_tmp[0];
 		}
 		else if (found_start
 				 && type == TOKEN_NAME
@@ -417,14 +522,63 @@ static bool skipScriptContent (tokenInfo *token, long *line, long *lineOffset)
 		{
 			found_script = true;
 			*line = line_tmp[1];
-			*lineOffset = lineOffset_tmp[1];
+			*column = column_tmp[1];
 		}
 		else
 			found_start = false;
 	}
 	while ((type != TOKEN_EOF) && (!found_script));
 
+	TRACE_LEAVE_TEXT("found_script? %d", found_script);
+
 	return found_script;
+}
+
+static void skipOtherScriptContent (const int delimiter)
+{
+	TRACE_ENTER();
+
+	const long startSourceLineNumber = getSourceLineNumber ();
+	const long startLineNumber = getInputLineNumber ();
+	const long startColumn = getInputColumnNumber () - 2; /* strlen ("<?") */
+
+	vString *script_name = vStringNew ();
+	bool reading_script_name = true;
+	while (1)
+	{
+		int c = getcFromInputFile ();
+		if (c == EOF)
+		{
+			break;
+		}
+		else if (reading_script_name && !isspace(c))
+		{
+			vStringPut (script_name, c);
+		}
+		else if (reading_script_name)
+		{
+			reading_script_name = false;
+		}
+		else if (c == delimiter)
+		{
+			c = getcFromInputFile ();
+			if (c == '>')
+			{
+				break;
+			}
+			ungetcToInputFile (c);
+		}
+	}
+
+	if (strcasecmp ("php", vStringValue (script_name)) == 0
+		|| strcmp ("=", vStringValue (script_name)) == 0)
+		makePromise ("PHP", startLineNumber, startColumn,
+					 getInputLineNumber (), getInputColumnNumber (),
+					 startSourceLineNumber);
+
+	vStringDelete (script_name);
+
+	TRACE_LEAVE();
 }
 
 static void makeClassRefTags (const char *classes)
@@ -433,7 +587,7 @@ static void makeClassRefTags (const char *classes)
 
 	do
 	{
-		if (*classes && !isspace (*classes))
+		if (*classes && !isspace ((unsigned char) *classes))
 			vStringPut (klass, *classes);
 		else if (!vStringIsEmpty (klass))
 		{
@@ -451,11 +605,21 @@ static void makeClassRefTags (const char *classes)
 	vStringDelete (klass);
 }
 
-static void readTag (tokenInfo *token, vString *text, int depth)
+static void readTag (tokenInfo *token, vString *text, int depth, bool asJSX)
 {
+	TRACE_ENTER();
+
 	bool textCreated = false;
 
-	readToken (token, true);
+	readToken (token, true, asJSX);
+	if (asJSX && token->type == TOKEN_TAG_END)
+	{
+		/* Accept <> */
+		ungetcToInputFile ('>');
+		token->type = TOKEN_NAME;
+		vStringClear (token->string);
+	}
+
 	if (token->type == TOKEN_NAME)
 	{
 		keywordId startTag;
@@ -465,7 +629,7 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 		bool stylesheet_expectation = false;
 
 		startTag = lookupKeyword (vStringValue (token->string), Lang_html);
-		isHeading = (startTag == KEYWORD_h1 || startTag == KEYWORD_h2 || startTag == KEYWORD_h3);
+		isHeading = (KEYWORD_heading_start <= startTag && startTag <= KEYWORD_heading_end);
 		isVoid = (startTag >= KEYWORD_area && startTag <= KEYWORD_wbr);
 		if (text == NULL && isHeading)
 		{
@@ -477,46 +641,47 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 		{
 			keywordId attribute = KEYWORD_NONE;
 
-			readToken (token, true);
+			readToken (token, true, asJSX);
 			if (token->type == TOKEN_NAME)
 				attribute = lookupKeyword (vStringValue (token->string), Lang_html);
 
 			if (attribute == KEYWORD_class)
 			{
-				readToken (token, true);
+				readToken (token, true, asJSX);
 				if (token->type == TOKEN_EQUAL)
 				{
-					readToken (token, true);
-					if (token->type == TOKEN_STRING)
+					readToken (token, true, asJSX);
+					if (token->type == TOKEN_STRING
+						&& !vStringIsEmpty (token->string))
 						makeClassRefTags (vStringValue (token->string));
 				}
 			}
 			else if (attribute == KEYWORD_id)
 			{
-				readToken (token, true);
+				readToken (token, true, asJSX);
 				if (token->type == TOKEN_EQUAL)
 				{
-					readToken (token, true);
+					readToken (token, true, asJSX);
 					if (token->type == TOKEN_STRING)
 						makeSimpleTag (token->string, K_ID);
 				}
 			}
 			else if (startTag == KEYWORD_a && attribute == KEYWORD_name)
 			{
-				readToken (token, true);
+				readToken (token, true, asJSX);
 				if (token->type == TOKEN_EQUAL)
 				{
-					readToken (token, true);
+					readToken (token, true, asJSX);
 					if (token->type == TOKEN_STRING || token->type == TOKEN_NAME)
 						makeSimpleTag (token->string, K_ANCHOR);
 				}
 			}
 			else if (startTag == KEYWORD_script && attribute == KEYWORD_src)
 			{
-				readToken (token, true);
+				readToken (token, true, asJSX);
 				if (token->type == TOKEN_EQUAL)
 				{
-					readToken (token, true);
+					readToken (token, true, asJSX);
 					if (token->type == TOKEN_STRING)
 						makeSimpleRefTag (token->string, K_SCRIPT,
 										  SCRIPT_KIND_EXTERNAL_FILE_ROLE);
@@ -526,10 +691,10 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 			{
 				if (attribute == KEYWORD_rel)
 				{
-					readToken (token, true);
+					readToken (token, true, asJSX);
 					if (token->type == TOKEN_EQUAL)
 					{
-						readToken (token, true);
+						readToken (token, true, asJSX);
 						if (token->type == TOKEN_STRING &&
 							/* strcmp is not enough:
 							 * e.g. <link href="fancy.css"
@@ -541,10 +706,10 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 				}
 				else if (attribute == KEYWORD_href)
 				{
-					readToken (token, true);
+					readToken (token, true, asJSX);
 					if (token->type == TOKEN_EQUAL)
 					{
-						readToken (token, true);
+						readToken (token, true, asJSX);
 						if (token->type == TOKEN_STRING)
 						{
 							if (stylesheet == NULL)
@@ -574,25 +739,33 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 		{
 			long startSourceLineNumber = getSourceLineNumber ();
 			long startLineNumber = getInputLineNumber ();
-			long startLineOffset = getInputLineOffset ();
+			long startColumn = getInputColumnNumber ();
 			long endLineNumber;
-			long endLineOffset;
+			long endColumn;
 			bool tag_start2;
 
 			if (startTag == KEYWORD_script)
 			{
-				bool script = skipScriptContent (token, &endLineNumber, &endLineOffset);
+				bool script = skipScriptContent (token, &endLineNumber, &endColumn);
 				if (script)
-					makePromise ("JavaScript", startLineNumber, startLineOffset,
-								 endLineNumber, endLineOffset, startSourceLineNumber);
-				readToken (token, true);
+					makePromise ("JavaScript", startLineNumber, startColumn,
+								 endLineNumber, endColumn, startSourceLineNumber);
+				readToken (token, true, asJSX);
 				goto out;
 			}
 
-			tag_start2 = readTagContent (token, text, &endLineNumber, &endLineOffset, depth);
+			tag_start2 = readTagContent (token, text, &endLineNumber, &endColumn, depth, asJSX);
 			if (tag_start2)
 			{
-				readToken (token, true);
+				readToken (token, true, asJSX);
+				if (asJSX && token->type == TOKEN_TAG_END)
+				{
+					/* Accept </> */
+					ungetcToInputFile ('>');
+					token->type = TOKEN_NAME;
+					vStringClear (token->string);
+				}
+
 				if (isHeading && textCreated && vStringLength (text) > 0)
 				{
 					keywordId endTag = lookupKeyword (vStringValue (token->string), Lang_html);
@@ -600,12 +773,20 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 					{
 						htmlKind headingKind;
 
-						if (startTag == KEYWORD_h1)
+						if (startTag == KEYWORD_title)
+							headingKind = K_TITLE;
+						else if (startTag == KEYWORD_h1)
 							headingKind = K_HEADING1;
 						else if (startTag == KEYWORD_h2)
 							headingKind = K_HEADING2;
-						else
+						else if (startTag == KEYWORD_h3)
 							headingKind = K_HEADING3;
+						else if (startTag == KEYWORD_h4)
+							headingKind = K_HEADING4;
+						else if (startTag == KEYWORD_h5)
+							headingKind = K_HEADING5;
+						else
+							headingKind = K_HEADING6;
 
 						vStringStripLeading (text);
 						vStringStripTrailing (text);
@@ -616,11 +797,11 @@ static void readTag (tokenInfo *token, vString *text, int depth)
 				{
 					keywordId endTag = lookupKeyword (vStringValue (token->string), Lang_html);
 					if (startTag == endTag)
-						makePromise ("CSS", startLineNumber, startLineOffset,
-									 endLineNumber, endLineOffset, startSourceLineNumber);
+						makePromise ("CSS", startLineNumber, startColumn,
+									 endLineNumber, endColumn, startSourceLineNumber);
 				}
 
-				readToken (token, true);
+				readToken (token, true, asJSX);
 			}
 		}
 	}
@@ -628,23 +809,29 @@ static void readTag (tokenInfo *token, vString *text, int depth)
  out:
 	if (textCreated)
 		vStringDelete (text);
+
+	TRACE_LEAVE();
 }
 
 static void findHtmlTags (void)
 {
+	TRACE_ENTER();
+
 	tokenInfo token;
 
 	token.string = vStringNew ();
 
 	do
 	{
-		readToken (&token, true);
-		if (token.type == TOKEN_TAG_START)
-			readTag (&token, NULL, 0);
+		readToken (&token, true, false);
+		if (token.type == TOKEN_OPEN_TAG_START)
+			readTag (&token, NULL, 0, false);
 	}
 	while (token.type != TOKEN_EOF);
 
 	vStringDelete (token.string);
+
+	TRACE_LEAVE();
 }
 
 static void initialize (const langType language)
@@ -664,5 +851,28 @@ extern parserDefinition* HtmlParser (void)
 	def->initialize   = initialize;
 	def->keywordTable = HtmlKeywordTable;
 	def->keywordCount = ARRAY_SIZE (HtmlKeywordTable);
+	def->versionCurrent = 1;
+	def->versionAge = 1;
 	return def;
+}
+
+/* Just another entry point for handling JSX */
+extern void htmlParseJSXElement (void)
+{
+	pushLanguage (Lang_html);
+	{
+		TRACE_ENTER();
+
+		tokenInfo token;
+		token.string = vStringNew ();
+
+		readToken (&token, true, true);
+		if (token.type == TOKEN_OPEN_TAG_START)
+			readTag (&token, NULL, 0, true);
+
+		vStringDelete (token.string);
+
+		TRACE_LEAVE();
+	}
+	popLanguage ();
 }

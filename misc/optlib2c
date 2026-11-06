@@ -38,31 +38,122 @@ EOF
 # PARSE
 #
 ########################################################################
+my $langdef_flags =
+    [
+     [ qr/\{base=([^\}]+)\}/, sub {
+	 $_[0]->{'base'} = $1;
+       } ],
+     [ qr/\{(dedicated|shared|bidirectional)\}/, sub {
+	 $_[0]->{'direction'} = $1;
+       } ],
+     [ qr/\{_autoFQTag\}/, sub {
+	 $_[0]->{'autoFQTag'} = 1;
+       } ],
+     [ qr/\{version=([0-9]+)\.([0-9]+)\}/, sub {
+	 $_[0]->{'versionCurrent'} = $1;
+	 $_[0]->{'versionAge'} = $2;
+       } ],
+     [ qr/\{_foreignLanguage=([^}]+)\}/, sub {
+	 push @{$_[0]->{'foreignLanguages'}}, $1;
+       } ],
+    ];
+
+my $kinddef_flags =
+    [
+     [ qr/\{_refonly\}/, sub {
+	 $_[0]->{'refonly'} = 1;
+       } ],
+     [ qr/\{version=([0-9]+)\}/, sub {
+	 $_[0]->{'version'} = $1;
+       } ],
+    ];
+
+my $roledef_flags =
+    [
+     [ qr/\{version=([0-9]+)\}/, sub {
+	 $_[0]->{'version'} = $1;
+       } ],
+    ];
+
+my $fielddef_flags =
+    [
+     [ qr/\{datatype=([^\}]+)\}/, sub {
+	 my $datatype = "FIELDTYPE_SCRIPTABLE|";
+
+	 if ($1 eq 'str')
+	 {
+	     $datatype .= "FIELDTYPE_STRING";
+	 }
+	 elsif ($1 eq 'int')
+	 {
+	     $datatype .= "FIELDTYPE_INTEGER";
+	 }
+	 elsif ($1 eq 'bool')
+	 {
+	     $datatype .= "FIELDTYPE_BOOL";
+	 }
+	 elsif ($1 eq 'str+bool')
+	 {
+	     $datatype .= "FIELDTYPE_STRING|FIELDTYPE_BOOL";
+	 }
+	 elsif ($1 eq 'bool+str')
+	 {
+	     die "\"{datatype=$1}\": use str+bool instead of bool+str";
+	 }
+	 else
+	 {
+	     die "Unknown datatype specification: \"{datatype=$1}\" in \"--_fielddef-<LANG>=...\"";
+	 }
+
+	 $_[0]->{'datatype'} = $datatype;
+       } ],
+     [ qr/\{version=([0-9]+)\}/, sub {
+	 $_[0]->{'version'} = $1;
+       } ],
+    ];
+
+my $extradef_flags =
+    [
+     [ qr/\{version=([0-9]+)\}/, sub {
+	 $_[0]->{'version'} = $1;
+       } ],
+    ];
+
 my $options =
     [
      [ qr/^--options=(.*)/, sub {
 	   parse_optlib ($1, $_[0]);
 	   return 1;
        } ],
-     #
-     # TODO: We should not assume the order of flags.
-     #
-     [ qr/^--langdef=([^\{]+)(((\{base=([^\{]+)\})(\{(dedicated|shared|bidirectional)\})?)?)(\{_autoFQTag\})?/, sub {
+     [ qr/^--__selector-(.*)=(.*)/, sub {
+	 die "Don't use --__selector-<LANG>= option before defining the language"
+	     if (! defined $_[0]->{'langdef'});
+	 $_[0]->{'selector'} = $2;
+	 return 1;
+       } ],
+     [ qr/^--langdef=([^\{]+)(.*)/, sub {
 	   die "LANG is already defined as $_[0]->{'langdef'}: $1"
 	       if (defined $_[0]->{'langdef'});
 	   die "Don't use \"all\" as a language name. It is reserved word."
 	       if ($1 eq "all");
+	   die "Don't use \"all\" as a language name. It is reserved word."
+	       if ($1 eq "NONE");
 
 	   $_[0]->{'langdef'} = $1;
-	   $_[0]->{'base'} = $5 if defined $5;
-	   $_[0]->{'direction'} = $7 if defined $7;
-	   $_[0]->{'autoFQTag'} = (defined $8)? 1: 0;
+	   my $rest = $2;
 
 	   die "Don't use a character as a language name other than alphanumeric, # and +: "
 	       . $_[0]->{'langdef'} unless ($_[0]->{'langdef'} =~ /^[a-zA-Z0-9#+]+$/);
+
+	   $_[0]->{'autoFQTag'} = 0;
+	   $_[0]->{'versionCurrent'} = 0;
+	   $_[0]->{'versionAge'} = 0;
+	   $_[0]->{'foreignLanguages'} = [];
+	   parse_flags ($rest, $_[0], $langdef_flags);
+
 	   return 1;
        } ],
-     [ qr/^--kinddef-(.*)=([^,]),([^,]+),([^\{]+)(\{_refonly\})?/, sub {
+     [ qr/^--kinddef-(.*)=([^,]),([^,]+),([^\{]+)(.*)/, sub {
 	 die "Don't use --kinddef-<LANG>=+ option before defining the language"
 	     if (! defined $_[0]->{'langdef'});
 	 die "Adding a kind is allowed only to the language specified with --langdef: $1"
@@ -71,8 +162,7 @@ my $options =
 	 my $letter = $2;
 	 my $name = $3;
 	 my $desc = $4;
-	 my $refonly = 0;
-	 $refonly = 1 if defined $5;
+	 my $rest = $5;
 
 	 die "'F' as a kind letter is reserved for file kind."
 	     if ($letter eq 'F');
@@ -86,11 +176,14 @@ my $options =
 	 die "Letters used in kind name other than initial letter must be alphanumeric characters: $name"
 	     unless (substr ($name, 1) =~ /^[a-zA-Z0-9]+$/);
 
-	 push @{$_[0]->{'kinddefs'}}, { enabled => 1, letter => $letter, name => $name, desc => $desc,
-					refonly => $refonly, roles => [], seps => [] };
+	 my $kdef = { enabled => 1, letter => $letter, name => $name, desc => $desc,
+		      refonly => 0, roles => [], seps => [], version => 0 };
+	 push @{$_[0]->{'kinddefs'}}, $kdef;
+	 parse_flags ($rest, $kdef, $kinddef_flags);
+
 	 return 1;
        } ],
-     [ qr/^--_extradef-(.*)=([^,]+),([^\{]+)/, sub {
+     [ qr/^--_extradef-(.*)=([^,]+),([^\{]+)(.*)/, sub {
 	 die "Don't use --_extradef-<LANG>=+ option before defining the language"
 	     if (! defined $_[0]->{'langdef'});
 	 die "Adding an extra is allowed only to the language specified with --langdef: $1"
@@ -98,14 +191,17 @@ my $options =
 
 	 my $name = $2;
 	 my $desc = $3;
+	 my $rest = $4;
 
 	 die "unacceptable character is used for extra name: $name"
 	     unless ($name =~ /^[a-zA-Z0-9]+$/);
 
-	 push @{$_[0]->{'extradefs'}}, { name => $name, desc => $desc };
+	 my $xdef = { name => $name, desc => $desc, version => 0, };
+	 push @{$_[0]->{'extradefs'}}, $xdef;
+	 parse_flags ($rest, $xdef, $extradef_flags);
 	 return 1;
        } ],
-     [ qr/^--_fielddef-(.*)=([^,]+),([^\{]+)/, sub {
+     [ qr/^--_fielddef-(.*)=([^,]+),([^\{]+)(.*)/, sub {
 	 die "Don't use --_fielddef-<LANG>=+ option before defining the language"
 	     if (! defined $_[0]->{'langdef'});
 	 die "Adding a field is allowed only to the language specified with --langdef: $1"
@@ -113,13 +209,17 @@ my $options =
 
 	 my $name = $2;
 	 my $desc = $3;
+	 my $rest = $4;
 	 die "unacceptable character is used for field name: $name"
 	     unless ($name =~ /^[a-zA-Z]+$/);
 
-	 push @{$_[0]->{'fielddefs'}}, { name => $name, desc => $desc };
+	 my $fdef = { name => $name, desc => $desc, version => 0 };
+	 push @{$_[0]->{'fielddefs'}}, $fdef;
+	 parse_flags ($rest, $fdef, $fielddef_flags);
+
 	 return 1;
        } ],
-     [ qr/^--_roledef-([^.]*)\.(?:([a-zA-Z])|\{([a-zA-Z][a-zA-Z0-9]*)\})=([a-zA-Z0-9]+),([^\{]+)/, sub {
+     [ qr/^--_roledef-([^.]*)\.(?:([a-zA-Z])|\{([a-zA-Z][a-zA-Z0-9]*)\})=([a-zA-Z0-9]+),([^\{]+)(.*)/, sub {
 	   die "Don't use --_roledef-<LANG>.<KNID>=+ option before defining the language"
 	     if (! defined $_[0]->{'langdef'});
 	   die "Adding a field is allowed only to the language specified with --langdef: $1"
@@ -129,14 +229,52 @@ my $options =
 	   for (@{$_[0]->{'kinddefs'}}) {
 	       if ((defined $2 && $_->{'letter'} eq $2)
 		   || (defined $3 && $_->{'name'} eq $3)) {
-		   my $role = { name => $4, desc => $5, owner => $_ };
+		   my $role = { enabled => 1, name => $4, desc => $5, owner => $_, version => 0 };
 		   push @{$_->{'roles'}}, $role;
 		   $kind_found = 1;
+
+		   my $rest = $6;
+		   parse_flags ($rest, $role, $roledef_flags);
+
 		   last;
 	       }
 	   }
-	   die "no such kind, \"$2\" where role \"$3\" is attached to" if (! $kind_found);
+	   my $k;
+	   $k = $2 if defined $2;
+	   $k = $3 if defined $3;
+	   die "no such kind, \"$k\" where role \"$4\" is attached to" if (! $kind_found);
 	   return 1;
+       } ],
+     [ qr/^--roles-([^.]+)\.(?:([a-zA-Z])|\{([a-zA-Z][a-zA-Z0-9]*)\})=-(.*)/, sub {
+	   die "Don't use --roles-<LANG>.<KIND>= option before defining the language"
+	       if (! defined $_[0]->{'langdef'});
+	   my $kind;
+	   my $kletter = $2;
+	   my $kname = $3;
+	   my $roles = $4;
+
+	   for my $k (@{$_[0]->{'kinddefs'}}) {
+	       if (defined $kletter && $k->{'letter'} eq $kletter
+		   || defined $kname && $k->{'name'} eq $kname) {
+		   $kind = $k;
+		   last;
+	       }
+	   }
+	   die "Don't use --roles-<LANG>.<KIND>= option before defined the kind"
+	       if (! defined $kind);
+
+	   if ($roles =~ /^{(.*)}$/) {
+	       $roles = $1;
+	   } else {
+	       die "The roles in --roles-<LANG>.<KIND>=-<ROLES> must be surrounded by '{' and '}'";
+	   }
+	   my @rolesa = split /\}\{/, $roles;
+
+	   parse_roles ($kind, \@rolesa, $_[0]);
+	   return 1;
+       } ],
+     [ qr/^--roles-([^.]+)\.([^=]+)=(.*)/, sub {
+	   die "--roles-<LANG>.<KIND>= can be used only for disabling a role: $2";
        } ],
      [ qr/^--languages=-(.*)/, sub {
 	   die "Don't use --languages=- option before defining the language"
@@ -155,7 +293,12 @@ my $options =
 	   die "Adding a map is allowed only to the language specified with --langdef: $1"
 	       unless ($_[0]->{'langdef'} eq $1);
 	   my $spec = $2;
-	   if ($spec =~ /\((.*)\)/) {
+	   if ($spec =~ /%(.+?)%(i|\{icase\})?/) {
+	       # TODO: handle \% in the regular expression.
+	       my $rexpr = { expr => $1,
+			     iCase => (defined $2 && ($2 eq 'i' || $2 eq '{icase}'))? 1: 0 };
+	       push @{$_[0]->{'rexprs'}}, $rexpr;
+	   } elsif ($spec =~ /\((.*)\)/) {
 	       push @{$_[0]->{'patterns'}}, $1;
 	   } elsif ($spec =~ /\.(.*)/) {
 	       push @{$_[0]->{'extensions'}}, $1;
@@ -206,7 +349,7 @@ my $options =
 	       if (! defined $_[0]->{'langdef'});
 	   die "Enabling/disabling an extra is allowed only to the language specified with --langdef: $1"
 	       unless ($_[0]->{'langdef'} eq $1);
-	   die "Specifing multiple extras in one --extras-... is not handled: {$3}"
+	   die "Specifying multiple extras in one --extras-... is not handled: {$3}"
 	       if ( index ($3, '{') != -1 );
 	   parse_extras ($2, $3, $_[0]);
 	   return 1;
@@ -222,7 +365,7 @@ my $options =
 	       if (! defined $_[0]->{'langdef'});
 	   die "Enabling/disabling a field is allowed only to the language specified with --langdef: $1"
 	       unless ($_[0]->{'langdef'} eq $1);
-	   die "Specifing multiple fields in one --fields-... is not handled: {$3}"
+	   die "Specifying multiple fields in one --fields-... is not handled: {$3}"
 	       if ( index ($3, '{') != -1 );
 	   parse_fields ($2, $3, $_[0]);
 	   return 1;
@@ -252,7 +395,7 @@ my $options =
 	   unless ($_[0]->{'langdef'} eq $1);
 	 return parse_regex ($3, $_[0], 1, $2);
        } ],
-     [ qr/^--_mtable-extend-([^=]*)=(.*)\+(.*)/, sub {
+     [ qr/^--_mtable-extend-([^=]*)=([a-zA-Z_0-9]+)\+([a-zA-Z_0-9]+)/, sub {
 	 die "Don't use --_mline-extend-<LANG>= option before defining the language"
 	   if (! defined $_[0]->{'langdef'});
 	 die "Extending a multitable regex is allowed only to the language specified with --langdef: $1"
@@ -288,6 +431,21 @@ my $options =
 	 scopesep($_[0], $2, $3, $4);
 	 return 1;
        } ],
+     [ qr/^--_paramdef-(.*)=([^,]+),([^\{]+)/, sub {
+	 die "Don't use --_paramdef-<LANG>=+ option before defining the language"
+	     if (! defined $_[0]->{'langdef'});
+	 die "Adding a parameter is allowed only to the language specified with --langdef: $1"
+	     unless ($_[0]->{'langdef'} eq $1);
+
+	 my $name = $2;
+	 my $desc = $3;
+
+	 die "unacceptable character is used for parameter name: $name"
+	     unless ($name =~ /^[_a-zA-Z0-9]+$/);
+
+	 push @{$_[0]->{'paramdefs'}}, { name => $name, desc => $desc };
+	 return 1;
+       } ],
      [ qr/^-.*/, sub {
 	 die "Unhandled option: \"$&\"";
        } ],
@@ -296,11 +454,28 @@ my $options =
        } ],
     ];
 
+sub parse_flags
+{
+    my ($line, $opts, $table) = @_;
+
+    TOP: while (1) {
+	for (@{$table}) {
+	    my ($pat, $action) = @{$_};
+	    if ($line =~ $pat) {
+		$line = "$`$'";
+		$action -> ($opts);
+		redo TOP;
+	    }
+	}
+	last;
+    }
+}
+
 sub parse_line {
-    my ($line, $opts) = @_;
+    my ($line, $opts, $table) = @_;
     my $r = 0;
 
-    for (@{$options}) {
+    for (@{$table}) {
 	my ($pat, $action) = @{$_};
 	if ($line =~ $pat) {
 	    $r = $action -> ($opts);
@@ -458,6 +633,20 @@ sub parse_kinds {
     }
 }
 
+sub parse_roles {
+    my ($kind, $roles, $opts) = @_;
+
+    NEXT: for my $role (@$roles) {
+	for my $r (@{$kind->{'roles'}}) {
+	    if ($role eq $r->{'name'}) {
+		$r->{'enabled'} = 0;
+		next NEXT;
+	    }
+	}
+	die "No role $_ is defined in kind $kind->{'name'}"
+    }
+}
+
 sub parse_optlib {
     my ($optlib, $opts) = @_;
 
@@ -476,12 +665,12 @@ sub parse_optlib {
 	    my $str = escape_as_cstr ($_);
 	    $receiver->($str);
 	    $receiver->("\n");
-	} elsif ( /^#.*/ ) {
+	} elsif ( /^[[:blank:]]*#.*/ ) {
 	    next;
 	} else {
 	    s/^\s*//;
 	    next if ( /^\s*$/ );
-	    $receiver = parse_line ($_, $opts);
+	    $receiver = parse_line ($_, $opts, $options);
 	    if (! $receiver) {
 		return undef;
 	    }
@@ -588,8 +777,23 @@ sub emit_header {
 EOF
 
     if (defined $opts->{'base'}) {
-    print <<EOF;
+	print <<EOF;
 #include "subparser.h"
+EOF
+    }
+    if ((scalar @{$opts->{'foreignLanguages'}}) > 0) {
+	print <<EOF;
+#include "dependency.h"
+EOF
+}
+    if (defined $opts->{'selector'}) {
+	print <<EOF;
+#include "selectors.h"
+EOF
+    }
+    if ((scalar @{$opts->{'paramdefs'}}) > 0) {
+	print <<EOF;
+#include "param.h"
 EOF
     }
     print <<EOF;
@@ -695,6 +899,31 @@ sub emit_patterns {
     emit_list $_[0], "patterns";
 }
 
+sub emit_rexprs {
+    my $opts = shift;
+
+    return if (! @{$opts->{'rexprs'}});
+
+    printf <<EOF;
+	static const struct rExprSrc rexprs [] = {
+EOF
+    for (@{$opts->{'rexprs'}}) {
+	my $expr = escape_as_cstr ("$_->{'expr'}");
+	my $iCase = $_->{'iCase'}? "true": "false";
+	printf <<EOF;
+		{
+		  .expr = "$expr",
+		  .iCase = $iCase,
+		},
+EOF
+    }
+    printf <<EOF;
+		REXPR_LAST_ENTRY
+	};
+
+EOF
+}
+
 # TODO: handling '\'
 sub escape_as_cstr {
     my $input = shift;
@@ -716,7 +945,6 @@ sub escape_as_cstr {
 sub emit_roledefs {
     my $opts = shift;
 
-
     for (@{$opts->{'kinddefs'}}) {
 	next unless @{$_->{'roles'}};
 	my $Kind = capitalize($_->{'name'});
@@ -725,8 +953,18 @@ sub emit_roledefs {
 EOF
 	for (@{$_->{'roles'}}) {
 	    my $desc = escape_as_cstr $_->{'desc'};
+	    my $enabled = $_->{'enabled'}? "true": "false";
 	    print <<EOF;
-		{ true, "$_->{'name'}", "$desc" },
+		{
+		  $enabled, "$_->{'name'}", "$desc",
+EOF
+	    if ($_->{'version'}) {
+		print <<EOF;
+		  .version = $_->{'version'},
+EOF
+	    }
+	    print <<EOF;
+		},
 EOF
 	}
 
@@ -817,6 +1055,11 @@ EOF
 		  ATTACH_SEPARATORS($opts->{'Clangdef'}${Kind}Separators),
 EOF
       }
+      if ($_->{'version'}) {
+	  print <<EOF;
+		  .version = $_->{'version'},
+EOF
+      }
       print <<EOF;
 		},
 EOF
@@ -872,7 +1115,8 @@ EOF
 sub emit_dependencies {
     my $opts = shift;
 
-    return if (! defined $opts->{'base'});
+    return if ((! defined $opts->{'base'})
+	       && ((scalar @{$opts->{'foreignLanguages'}}) == 0));
 
     my $direction = "SUBPARSER_BASE_RUNS_SUB";
 
@@ -890,12 +1134,32 @@ sub emit_dependencies {
 	}
     }
 
-    print <<EOF;
+    if (defined $opts->{'base'}) {
+	print <<EOF;
 	static subparser $opts->{'Clangdef'}Subparser = {
 		.direction = $direction,
 	};
+EOF
+    }
+
+    print <<EOF;
 	static parserDependency $opts->{'Clangdef'}Dependencies [] = {
-		[0] = { DEPTYPE_SUBPARSER, "$opts->{'base'}", &$opts->{'Clangdef'}Subparser },
+EOF
+    my $i = 0;
+    if (defined $opts->{'base'}) {
+	print <<EOF;
+		[$i] = { DEPTYPE_SUBPARSER, "$opts->{'base'}", &$opts->{'Clangdef'}Subparser },
+EOF
+	$i++;
+    }
+    for (@{$opts->{'foreignLanguages'}}) {
+	print <<EOF;
+		[$i] = { DEPTYPE_FOREIGNER, "$_", NULL },
+EOF
+	$i++;
+    }
+
+print <<EOF;
 	};
 EOF
 
@@ -917,6 +1181,36 @@ EOF
 		  .enabled     = $enabled,
 		  .name        = "$_->{'name'}",
 		  .description = "$desc",
+EOF
+      if ($_->{'version'}) {
+	  print <<EOF;
+		  .version     = "$_->{'version'}",
+EOF
+      }
+      print <<EOF;
+		},
+EOF
+    }
+    print <<EOF;
+	};
+EOF
+}
+
+sub emit_params {
+    my $opts = shift;
+
+    return if (! @{$opts->{'paramdefs'}});
+
+    print <<EOF;
+	static paramDefinition $opts->{'Clangdef'}ParamTable [] = {
+EOF
+    for (@{$opts->{'paramdefs'}}) {
+      my $desc = escape_as_cstr $_->{'desc'};
+      print <<EOF;
+		{
+		  .name        = "$_->{'name'}",
+		  .desc        = "$desc",
+		  .handleParam = NULL,
 		},
 EOF
     }
@@ -941,12 +1235,37 @@ EOF
 		  .enabled     = $enabled,
 		  .name        = "$_->{'name'}",
 		  .description = "$desc",
+EOF
+      if (defined $_->{'datatype'}) {
+	  print <<EOF;
+		  .dataType = $_->{'datatype'},
+		  .isValueAvailable = isValueAvailableGeneric,
+		  .getValueObject = getFieldValueGeneric,
+		  .setValueObject = setFieldValueGeneric,
+EOF
+      }
+      if ($_->{'version'}) {
+	  print <<EOF;
+		  .version     = $_->{'version'},
+EOF
+      }
+      print <<EOF;
 		},
 EOF
     }
     print <<EOF;
 	};
 EOF
+}
+
+sub emit_selector {
+    my $opts = shift;
+
+    if (defined $opts->{'selector'}) {
+	print <<EOF;
+	static selectLanguage selectors[] = { $opts->{'selector'}, NULL };
+EOF
+    }
 }
 
 sub emit_fields_initialization {
@@ -961,10 +1280,26 @@ sub emit_fields_initialization {
     }
 
     print <<EOF;
+	def->versionCurrent= $opts->{'versionCurrent'};
+	def->versionAge    = $opts->{'versionAge'};
 	def->enabled       = ${enabled};
 	def->extensions    = extensions;
 	def->patterns      = patterns;
+EOF
+    if (@{$opts->{'rexprs'}}) {
+	print <<EOF;
+	def->rexprs        = rexprs;
+EOF
+    }
+    print <<EOF;
 	def->aliases       = aliases;
+EOF
+    if (defined $opts->{'selector'}) {
+	print <<EOF;
+	def->selectLanguage= selectors;
+EOF
+    }
+print <<EOF;
 	def->method        = ${method};
 EOF
 
@@ -994,6 +1329,13 @@ EOF
 EOF
     }
 
+    if (@{$opts->{'paramdefs'}}) {
+	print <<EOF;
+	def->paramTable    = $opts->{'Clangdef'}ParamTable;
+	def->paramCount    = ARRAY_SIZE($opts->{'Clangdef'}ParamTable);
+EOF
+    }
+
     if (@{$opts->{'regexs'}}) {
 	print <<EOF;
 	def->tagRegexTable = $opts->{'Clangdef'}TagRegexTable;
@@ -1001,7 +1343,7 @@ EOF
 EOF
     }
 
-    if (defined $opts->{'base'}) {
+    if (defined $opts->{'base'} || (scalar @{$opts->{'foreignLanguages'}}) > 0) {
 	print <<EOF;
 	def->dependencies    = $opts->{'Clangdef'}Dependencies;
 	def->dependencyCount = ARRAY_SIZE($opts->{'Clangdef'}Dependencies);
@@ -1052,13 +1394,16 @@ EOF
     emit_extensions      $opts;
     emit_aliases         $opts;
     emit_patterns        $opts;
+    emit_rexprs          $opts;
     emit_roledefs        $opts;
     emit_scopeseps       $opts;
     emit_kinddefs        $opts;
     emit_fields          $opts;
     emit_xtags           $opts;
+    emit_params          $opts;
     emit_regexs          $opts;
     emit_dependencies    $opts;
+    emit_selector        $opts;
 
     print "\n";
 
@@ -1110,6 +1455,7 @@ sub main {
 		disabled => 0,
 		patterns => [],
 		extensions => [],
+		rexprs => [],
 		aliases => [],
 		regexs => [# { regex => "", name => "", kind => "", flags => "", mline => 1|0, optscript => "" },
 			  ],
@@ -1121,6 +1467,8 @@ sub main {
 			     ],
 		fielddefs => [ # { name => "", desc => "", enabled => 1|0 },
 			      ],
+		paramdefs => [ # { name => "", desc => "" },
+			     ],
 		base => undef,
 		tableNames => [ # ""
 			       ],
@@ -1134,6 +1482,7 @@ sub main {
 			   ],
 		sequel =>  [ # ""
 			   ],
+		selector => undef,
 	       );
 
     for (@_) {

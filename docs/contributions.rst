@@ -262,7 +262,7 @@ Build script
 To add your optlib parser, ``foo.ctags``, into ``ctags`` do the following steps;
 
 * put ``foo.ctags`` file on ``optlib/`` directory
-* add ``foo.ctags`` on ``OPTLIB2C_INPUT`` variable in ``makefiles/optlib2c_input.mak``
+* add ``foo.ctags`` on ``OPTLIB2C_INPUT`` variable in ``source.mak``
 * add ``fooParser`` on ``PARSER_LIST`` macro variable in ``main/parser_p.h``
 * add ``foo`` on the list in the section "New parsers" in ``docs/news.rst``
 * add ``"..\optlib\foo.c"`` in ``win32/ctags_vs2013.vcxproj``
@@ -279,7 +279,10 @@ To add your parser file, ``foo.c``, into ``ctags`` do the following steps;
 * add ``"..\parsers\foo.c"`` in ``win32/ctags_vs2013.vcxproj``
 * add ``"..\parsers\foo.c"`` in  ``win32/ctags_vs2013.vcxproj.filters``
 
-Without updating win32 files our CI process run on Appveyor will fail.
+If you have GNU make, ``make -C win32`` updates the win32 files described above
+from ``makefile.mak``.
+Without updating win32 files our CI process run on
+Appveyor will fail.
 
 See `this pull request <https://github.com/universal-ctags/ctags/pull/2765>`_
 for the `Meson` parser as an example of optlib parser.
@@ -357,20 +360,18 @@ How to add a new man page for your parser
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 1. write what the users of your parser may want to (or should) know to ``man/ctags-lang-LANGUAGE.7.rst.in``
-2. add ``man/ctags-lang-LANGUAGE.7.rst`` to the list of ``AC_CONFIG_FILES`` in ``configure.ac``.
-3. add ``man/ctags-lang-LANGUAGE.7`` to ``man_MANS`` of ``Makefile.am``.
-4. add ``man/ctags-lang-LANGUAGE.7.rst.in`` to ``IN_SOURCE_FILES`` of ``man/Makefile``.
-5. run ``cd man; make QUICK=1 update-docs``. This step generates the rst file at ``docs/man/ctags-lang-LANGUAGE.7.rst``.
-6. add ``ctags-lang-LANGUAGE(7)`` to (toctree of) ``docs/man-pages.rst``.
-7. do ``git add`` for
+2. add ``man/ctags-lang-LANGUAGE.7`` to ``GEN_IN_MAN_FILES`` of ``man/Makefile.am``.
+3. run ``make -C man update-docs``. This step generates the rst file at ``docs/man/ctags-lang-LANGUAGE.7.rst``.
+4. add ``ctags-lang-LANGUAGE(7)`` to (toctree of) ``docs/man-pages.rst``.
+5. do ``git add`` for
     * ``man/ctags-lang-LANGUAGE.7.rst.in``
-    * ``configure.ac``
-    * ``Makefile.am``
-    * ``man/Makefile``
     * ``docs/man/ctags-lang-LANGUAGE.7.rst``
-    * ``docs/man-pages.rst``
-8. git commit with a log header: "``docs(man): add a man page for LANGUAGE``".
-9. make a pull request
+6. git commit with a log header: "``docs(man): add a man page for LANGUAGE``".
+7. make a pull request
+
+.. TODO: Why do we have to git add ``docs/man/ctags-lang-LANGUAGE.7.rst``?
+	A system which uses it has Sphinx. It should be able to generate
+	``docs/man/ctags-lang-LANGUAGE.7.rst``.
 
 Committing and submitting a pull request
 ---------------------------------------------------------------------
@@ -428,20 +429,35 @@ Title of commit log and pull request
 
 * Use following prefixes for the changes other than parsers.
 
-  main:
+  main
     Changes for files under ``main/`` directory
 
-  Units:
+  Units
     Changes for the test cases under ``Units/`` directory
 
   Tmain
     Changes for the test cases under ``Tmain/`` directory
+
+  units
+    Changes for the test harness (misc/units.py) itself
 
   docs(web)
     Changes for the ``docs/*.rst``
 
   docs(man)
     Changes for the ``man/*.rst``
+
+  dsl
+    Changes operators that can be used in optscript command
+
+  operators
+    Changes operators that can be used in optlib `{{` ... `}}` blocks
+
+  prelude
+    Changes optlib procedures defined in main/CommonPrelude.ps
+
+  CXX (or Cxx)
+    Changes affecting all parsers defined in parsers/cxx
 
   See also the output of ``git log`` command.
 

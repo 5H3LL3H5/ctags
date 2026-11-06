@@ -27,13 +27,13 @@
 --kinddef-MesonOptions=a,array,arrays
 --kinddef-MesonOptions=f,feature,features
 
---mline-regex-MesonOptions=/^option[ \t\n]*\([ \t\n]*'([^']*[^\])'[ \t\n]*,[ \t\n]*type[ \t\n]*:[ \t\n]*'([a-z]+)'//{{
+--mline-regex-MesonOptions=/^option[ \t\n]*\([ \t\n]*'([^']*[^\\])'[ \t\n]*,[ \t\n]*type[ \t\n]*:[ \t\n]*'([a-z]+)'//{{
     % \1 points a tag name.
     \1
     % \2 may point a kind. This must be converted to a name from a string.
     \2 cvn
     % Push the start position of the group 1.
-    1 /start _matchloc
+    @1
     % To skip an unexpected kind name, _tag is wrapped with stopped.
     { _tag } stopped {
         % Unexpected kind. Clear the stack.

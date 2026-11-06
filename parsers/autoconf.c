@@ -11,8 +11,8 @@
 
 #include <string.h>
 
-#include "autoconf.h"
-#include "m4.h"
+#include "x-autoconf.h"
+#include "x-m4.h"
 
 #include "debug.h"
 #include "entry.h"
@@ -76,6 +76,11 @@ static bool doesStringLiteralStart (m4Subparser *m4 CTAGS_ATTR_UNUSED, int c CTA
 {
 	// return (c == '"') || (c == '\'') || (c == '`');
 	return false;
+}
+
+static bool doesWantToParseInsideQuotes (m4Subparser *m4 CTAGS_ATTR_UNUSED, intArray *indexStack CTAGS_ATTR_UNUSED)
+{
+	return true;
 }
 
 static bool probeLanguage (m4Subparser *m4 CTAGS_ATTR_UNUSED, const char* token)
@@ -175,6 +180,7 @@ extern parserDefinition* AutoconfParser (void)
 		.newMacroNotify = newMacroCallback,
 		.doesLineCommentStart = doesLineCommentStart,
 		.doesStringLiteralStart = doesStringLiteralStart,
+		.doesWantToParseInsideQuotes = doesWantToParseInsideQuotes,
 	};
 	static parserDependency dependencies [] = {
 		[0] = { DEPTYPE_SUBPARSER, "M4", &autoconfSubparser },

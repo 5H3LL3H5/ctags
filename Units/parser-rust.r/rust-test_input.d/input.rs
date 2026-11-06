@@ -63,6 +63,7 @@ fn array_param(arr: [[u32; 3]; 4])
  */
 
 static size: usize = 1;
+const N: usize = 10;
 
 #[cfg(test)]
 struct S1 {
@@ -89,15 +90,15 @@ fn main() {
 	println!("{}", a.foo_field_1.to_string());
 	ignore!
 	(
-		fn ignored_inside_macro() {}
+		fn ignored_inside_macro0() {}
 	);
 	ignore!
 	[
-		fn ignored_inside_macro() {}
+		fn ignored_inside_macro1() {}
 	];
 	ignore!
 	{
-		fn ignored_inside_macro() {}
+		fn ignored_inside_macro2() {}
 	}
 
 	let _ = "fn ignored_in_string() {}

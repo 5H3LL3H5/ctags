@@ -50,7 +50,7 @@
 #include <string.h>
 #include <ctype.h>
 
-#include "cpreprocessor.h"
+#include "x-cpreprocessor.h"
 
 #include "entry.h"
 #include "keyword.h"
@@ -68,7 +68,7 @@ typedef enum {
 	SYNTAX_PROTO2,
 	SYNTAX_PROTO3,
 } protobufSyntax;
-static protobufSyntax syntax = SYNTAX_UNKNOWN;;
+static protobufSyntax syntax = SYNTAX_UNKNOWN;
 
 typedef enum {
 	PK_PACKAGE,
@@ -206,7 +206,7 @@ repeat:
 		token.keyword = lookupCaseKeyword (vStringValue (token.value), Lang_protobuf);
 		cppUngetc (c);
 	}
-	else if (expectingStringLiteral && c == STRING_SYMBOL)
+	else if (expectingStringLiteral && c == CPP_STRING_SYMBOL)
 	{
 		token.type = TOKEN_STR;
 		vStringCopy (token.value,
@@ -297,9 +297,7 @@ static void parseEnumConstants (int scopeCorkIndex)
 		if (token.type == ';')
 			nextToken ();
 	}
-	tagEntryInfo *e = getEntryInCorkQueue (scopeCorkIndex);
-	if (e)
-		e->extensionFields.endLine = getInputLineNumber ();
+	setTagEndLineToCorkEntry (scopeCorkIndex, getInputLineNumber ());
 }
 
 static void parseOneofField (int scopeCorkIndex)
@@ -347,9 +345,7 @@ static void parseOneofFields (int scopeCorkIndex)
 			break;
 	}
 
-	tagEntryInfo *e = getEntryInCorkQueue (scopeCorkIndex);
-	if (e)
-		e->extensionFields.endLine = getInputLineNumber ();
+	setTagEndLineToCorkEntry (scopeCorkIndex, getInputLineNumber ());
 }
 
 #define gatherTypeinfo(VSTRING,CONDITION)			\
@@ -562,7 +558,7 @@ static void parseSyntax (void)
 	nextTokenFull (true);
 	if (token.type == TOKEN_STR)
 	{
-		const vString *proto = cppGetLastCharOrStringContents ();
+		const vString *proto = token.value;
 		if (strcmp (vStringValue (proto), "proto2") == 0)
 			syntax = SYNTAX_PROTO2;
 		else if (strcmp (vStringValue (proto), "proto3") == 0)
@@ -642,7 +638,7 @@ static void findProtobufTags0 (bool oneshot, int originalScopeCorkIndex)
 			if (e)
 			{
 				scopeCorkIndex = e->extensionFields.scopeIndex;
-				e->extensionFields.endLine = getInputLineNumber ();
+				setTagEndLine (e, getInputLineNumber ());
 			}
 		}
 		nextToken ();
@@ -655,10 +651,13 @@ static void findProtobufTags0 (bool oneshot, int originalScopeCorkIndex)
 static void findProtobufTags (void)
 {
 	cppInit (false, false, false, false,
-			 KIND_GHOST_INDEX, 0, KIND_GHOST_INDEX,
+			 KIND_GHOST_INDEX, 0, 0,
+			 KIND_GHOST_INDEX,
 			 KIND_GHOST_INDEX, 0, 0,
 			 FIELD_UNKNOWN);
 	token.value = vStringNew ();
+
+	syntax = SYNTAX_UNKNOWN;
 
 	nextToken ();
 	findProtobufTags0 (false, CORK_NIL);

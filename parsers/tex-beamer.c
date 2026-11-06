@@ -20,7 +20,7 @@
 #include "kind.h"
 #include "parse.h"
 #include "read.h"
-#include "tex.h"
+#include "x-tex.h"
 
 #include <string.h>
 
@@ -129,7 +129,7 @@ static struct TexParseStrategy frame_env_strategy [] = {
 		.scopeIndex = CORK_NIL,	/* root scope */
 	},
 	{
-		/* This should not be optoinal. */
+		/* This should not be optional. */
 		.type = '{',
 		.flags = TEX_NAME_FLAG_INCLUDING_WHITESPACE,
 		.kindIndex = K_FRAMESUBTITLE,
@@ -147,8 +147,8 @@ static struct TexParseStrategy frame_env_strategy [] = {
  *	 FUNCTION DEFINITIONS
  */
 
-static  struct TexParseStrategy *readIdentifierNotify (texSubparser *s,
-													   vString *identifier)
+static struct TexParseStrategy *readIdentifierNotify (texSubparser *s,
+													  vString *identifier)
 {
 	/* Reject uninteresting identifiers early. */
 	if (! (vStringLength (identifier) > 10
@@ -216,9 +216,7 @@ static bool readEnviromentEndNotify (texSubparser *s,
 	if (strcmp (vStringValue (env), "frame") == 0)
 	{
 		struct beamerSubparser *b = (struct beamerSubparser *)s;
-		tagEntryInfo *e = getEntryInCorkQueue (b->lastTitleCorkIndex);
-		if (e)
-			e->extensionFields.endLine = getInputLineNumber ();
+		setTagEndLineToCorkEntry (b->lastTitleCorkIndex, getInputLineNumber ());
 		return true;
 	}
 	return false;

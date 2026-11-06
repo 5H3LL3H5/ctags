@@ -1,5 +1,10 @@
 #!/bin/sh
 #
+###################################################################
+# Use units.py instead of this shell script.
+# Only minor parts of this script are still used.
+###################################################################
+#
 # units - Units test harness for ctags
 #
 # Copyright (C) 2014 Masatake YAMATO
@@ -2517,6 +2522,7 @@ $0 validate-input [OPTIONS] UNITS-DIR VALIDATORS-DIR
 		--validators=validator[,...]: Validate test cases specifying
 					    given validators.
 		--colorized-output: yes|no: print the result in color.
+		--categories CATEGORY1[,CATEGORY2,...]: run only CATEGORY* related cases.
 EOF
 }
 
@@ -2536,7 +2542,7 @@ is_validator_runnable ()
     local d=$2
     shift 2
 
-    "$d/"validator-"$v" is_runnable
+    "$d/"validator-"$v" is_runnable unused $d
 }
 
 update_validator_list ()
@@ -2719,7 +2725,7 @@ validate_file ()
     local validators_dir=$3
     shift 3
 
-    ${validators_dir}/validator-${validator} validate $input
+    ${validators_dir}/validator-${validator} validate $input ${validators_dir}
     return $?
 }
 
@@ -2798,7 +2804,8 @@ validate_dir ()
 	     done | sort)
 
     for f in $inputs; do
-	t=${f#input}; t=${t%.*}
+	t=$(basename $f)
+	t=${t#input}; t=${t%.*}
 	v=$(resolve_validator "${base_dir}"/validator"$t" \
 			     "$default_validator" \
 			     "$has_expected_tags" \
@@ -2836,6 +2843,16 @@ validate_category ()
 
     local d
     local default_validator=${_NOOP_VALIDATOR}
+
+    #
+    # Filtered by CATEGORIES
+    #
+    if [ -n "$CATEGORIES" ] && ! member_p "${category}" $CATEGORIES; then
+	return 1
+    fi
+    echo
+    echo "Category: ${category}"
+    line
 
     if [ -r "${base_dir}/validator" ]; then
 	default_validator=$(cat "${base_dir}/validator" | grep -v '#')
@@ -2932,6 +2949,27 @@ action_validate_input ()
 		COLORIZED_OUTPUT=${1#--colorized-output=}
 		shift
 		;;
+	    --categories)
+		shift
+		for c in $(echo "$1" | tr ',' ' '); do
+		    if [ "$c" = "ROOT" ]; then
+			CATEGORIES="$CATEGORIES ROOT"
+		    else
+			CATEGORIES="$CATEGORIES ${c%.r}.r"
+		    fi
+		done
+		shift
+		;;
+	    --categories=*)
+		for c in $(echo "${1#--categories=}" | tr ',' ' '); do
+		    if [ "$c" = "ROOT" ]; then
+			CATEGORIES="$CATEGORIES ROOT"
+		    else
+			CATEGORIES="$CATEGORIES ${c%.r}.r"
+		    fi
+		done
+		shift
+		;;
 	    -*)
 		ERROR 1 "unknown option \"${1}\" for ${action} action"
 		;;
@@ -2973,9 +3011,6 @@ action_validate_input ()
     for d in ${units_dir}/*.r; do
 	[ -d "$d" ] || continue
 	category=${d##*/}
-	echo
-	echo "Category: ${category}"
-	line
 	validate_category "${category}" "$d" "${validators_dir}"
     done
 

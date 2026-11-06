@@ -1,0 +1,13 @@
+SomeClass	input.ts	/^class SomeClass {$/;"	c
+brokenMethod	input.ts	/^  brokenMethod() {$/;"	m	class:SomeClass
+x	input.ts	/^    const x = {a: !true ? 1 : 2};$/;"	C	method:SomeClass.brokenMethod
+missingMethod	input.ts	/^  missingMethod() {}$/;"	m	class:SomeClass
+C	input-0.ts	/^class C {$/;"	c
+foo	input-0.ts	/^  foo!: string;$/;"	p	class:C
+bar	input-0.ts	/^  public bar!: number;$/;"	p	class:C
+baz	input-0.ts	/^  readonly baz!: boolean;$/;"	p	class:C
+constructor	input-0.ts	/^  constructor() {}$/;"	m	class:C
+A	input-1.ts	/^class A {$/;"	c
+f	input-1.ts	/^  f() {$/;"	m	class:A
+d	input-1.ts	/^    const d = {$/;"	C	method:A.f
+a	input-1.ts	/^    const a = (b: unknown) => {$/;"	C	method:A.f

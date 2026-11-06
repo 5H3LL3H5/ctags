@@ -8,7 +8,8 @@ DECLARE_FUNCTION_1;
 // Macro without parameters
 #define DECLARE_FUNCTION_1A() int p0A()
 
-DECLARE_FUNCTION_1A;
+DECLARE_FUNCTION_1A; // don't expand
+unsigned DECLARE_FUNCTION_1A();	// expand
 
 // Simple macro with parameters
 
@@ -26,6 +27,10 @@ DECLARE_FUNCTION_3(int,p3,int a,int b);
 #define DEPRECATED(...) __VA_ARGS__ __attribute__((deprecated))
 
 DEPRECATED(int p4());
+
+#define ENUM_GNUX(n,e...) enum n { e }
+
+ENUM_GNUX(color, red, blue, green);
 
 // Recursive macro expansion
 

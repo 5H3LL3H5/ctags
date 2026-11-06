@@ -21,15 +21,16 @@
 #include "xtag.h"
 #include "numarray.h"
 #include "routines.h"
+#include "options.h"
 
 #include <string.h>
 
 struct promise {
 	langType lang;
 	unsigned long startLine;
-	long startCharOffset;
+	long startColumn;
 	unsigned long endLine;
-	long endCharOffset;
+	long endColumn;
 	unsigned long sourceLineOffset;
 	int parent_promise;
 	ptrArray *modifiers;
@@ -37,8 +38,8 @@ struct promise {
 
 typedef void ( *promiseInputModifier) (unsigned char * input,
 									   size_t size,
-									   unsigned long startLine, long startCharOffset,
-									   unsigned long endLine, long endCharOffset,
+									   unsigned long startLine, long startColumn,
+									   unsigned long endLine, long endColumn,
 									   void *data);
 typedef void ( *promiseDestroyAttachedData) (void *data);
 
@@ -62,19 +63,30 @@ static void attachPromiseModifier (int promise,
 
 
 int  makePromise   (const char *parser,
-		    unsigned long startLine, long startCharOffset,
-		    unsigned long endLine, long endCharOffset,
+		    unsigned long startLine, long startColumn,
+		    unsigned long endLine, long endColumn,
 		    unsigned long sourceLineOffset)
 {
 	struct promise *p;
 	int r;
 	langType lang = LANG_IGNORE;
 
-	if ((!isThinStreamSpec(startLine,
-						   startCharOffset,
-						   endLine,
-						   endCharOffset,
-						   sourceLineOffset))
+	const bool is_thin_area_spec =
+		isThinAreaSpec(startLine, startColumn,
+					   endLine, endColumn,
+					   sourceLineOffset);
+
+	if (!is_thin_area_spec
+		&& (startLine > endLine
+			|| (startLine == endLine && startColumn >= endColumn)))
+		return -1;
+
+	verbose("makePromise: %s > %s start(line: %lu, offset: %ld, srcline: %lu), end(line: %lu, offset: %ld)\n",
+			getInputLanguageName (),
+			parser? parser: "*", startLine, startColumn, sourceLineOffset,
+			endLine, endColumn);
+
+	if ((!is_thin_area_spec)
 		&& ( !isXtagEnabled (XTAG_GUEST)))
 		return -1;
 
@@ -98,11 +110,24 @@ int  makePromise   (const char *parser,
 	p = promises + promise_count;
 	p->parent_promise = current_promise;
 	p->lang = lang;
-	p->startLine = startLine;
-	p->startCharOffset = startCharOffset;
-	p->endLine = endLine;
-	p->endCharOffset = endCharOffset;
-	p->sourceLineOffset = sourceLineOffset;
+
+	if (is_thin_area_spec && isAreaStacked())
+	{
+		getAreaInfo (&p->startLine,
+					 &p->startColumn,
+					 &p->endLine,
+					 &p->endColumn);
+		p->sourceLineOffset = p->startLine;
+	}
+	else
+	{
+		p->startLine = startLine;
+		p->startColumn = startColumn;
+		p->endLine = endLine;
+		p->endColumn = endColumn;
+		p->sourceLineOffset = sourceLineOffset;
+	}
+
 	p->modifiers = NULL;
 
 	r = promise_count;
@@ -169,13 +194,13 @@ bool forcePromises (void)
 		struct promise *p = promises + i;
 
 		if (p->lang != LANG_IGNORE && isLanguageEnabled (p->lang))
-			tagFileResized = runParserInNarrowedInputStream (p->lang,
-															 p->startLine,
-															 p->startCharOffset,
-															 p->endLine,
-															 p->endCharOffset,
-															 p->sourceLineOffset,
-															 i)
+			tagFileResized = runParserInArea (p->lang,
+											  p->startLine,
+											  p->startColumn,
+											  p->endLine,
+											  p->endColumn,
+											  p->sourceLineOffset,
+											  i)
 				? true
 				: tagFileResized;
 	}
@@ -192,7 +217,7 @@ int getLastPromise (void)
 	return promise_count - 1;
 }
 
-static unsigned char* fill_or_skip (unsigned char *input, unsigned char *input_end, bool filling)
+static unsigned char* fill_or_skip (unsigned char *input, const unsigned char *const input_end, const bool filling)
 {
 	if ( !(input < input_end))
 		return NULL;
@@ -216,53 +241,59 @@ static unsigned char* fill_or_skip (unsigned char *input, unsigned char *input_e
 	}
 }
 
-static void line_filler (unsigned char *input, size_t size,
-						 unsigned long startLine, long startCharOffset,
-						 unsigned long endLine, long endCharOffset,
+static void line_filler (unsigned char *input, size_t const size,
+						 unsigned long const startLine, long const startColumn,
+						 unsigned long const endLine, long const endColumn,
 						 void *data)
 {
-	ulongArray *lines = data;
+	const ulongArray *lines = data;
+	const size_t count = ulongArrayCount (lines);
 	unsigned int start_index, end_index;
 	unsigned int i;
 
-	for (i = 0; i < ulongArrayCount (lines); i++)
+	for (i = 0; i < count; i++)
 	{
-		unsigned long line = ulongArrayItem (lines, i);
+		const unsigned long line = ulongArrayItem (lines, i);
 		if (line >= startLine)
+		{
+			if (line > endLine)
+				return;			/* Not over-wrapping */
 			break;
+		}
 	}
-	if (i == ulongArrayCount (lines))
-		return;
-	if (i > endLine)
-		return;
+	if (i == count)
+		return;					/* Not over-wrapping */
 	start_index = i;
 
-	for (; i < ulongArrayCount (lines); i++)
+	for (; i < count; i++)
 	{
-		unsigned long line = ulongArrayItem (lines, i);
+		const unsigned long line = ulongArrayItem (lines, i);
 		if (line > endLine)
 			break;
 	}
 	end_index = i;
 
 	unsigned long input_line = startLine;
+	const unsigned char *const input_end = input + size;
 	for (i = start_index; i < end_index; i++)
 	{
-		unsigned long line = ulongArrayItem (lines, i);
+		const unsigned long line = ulongArrayItem (lines, i);
 
 		while (1)
 		{
 			if (input_line == line)
 			{
-				input = fill_or_skip (input, input + size, true);
+				input = fill_or_skip (input, input_end, true);
 				input_line++;
 				break;
 			}
 			else
 			{
-				input = fill_or_skip (input, input + size, false);
+				input = fill_or_skip (input, input_end, false);
 				input_line++;
 			}
+			if (input == NULL)
+				return;
 		}
 	}
 }
@@ -293,8 +324,8 @@ static void collectModifiers(int promise, ptrArray *modifiers)
 }
 
 void runModifiers (int promise,
-				   unsigned long startLine, long startCharOffset,
-				   unsigned long endLine, long endCharOffset,
+				   unsigned long startLine, long startColumn,
+				   unsigned long endLine, long endColumn,
 				   unsigned char *input,
 				   size_t size)
 {
@@ -305,8 +336,8 @@ void runModifiers (int promise,
 	{
 		struct modifier *m = ptrArrayItem (modifiers, i - 1);
 		m->modifier (input, size,
-					 startLine, startCharOffset,
-					 endLine, endCharOffset,
+					 startLine, startColumn,
+					 endLine, endColumn,
 					 m->data);
 	}
 	ptrArrayDelete (modifiers);

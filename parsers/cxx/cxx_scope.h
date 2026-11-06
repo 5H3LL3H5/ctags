@@ -32,6 +32,7 @@ enum CXXScopeType
 	CXXScopeTypeVariable, // template variables, mainly
 	CXXScopeTypePrototype,
 	CXXScopeTypeTypedef,  // template variables used in "using A = B<T>"
+	CXXScopeTypeModule,	  // Just for filling the scope field of partitions
 	CXXScopeTypeLAST
 };
 
@@ -47,6 +48,10 @@ const char * cxxScopeGetFullName(void);
 // scope currently. This name does not include namespaces so
 // it is always a single identifier.
 const char * cxxScopeGetName(void);
+
+// Return the corkIndex of the token representing currently scope.
+// This can be CORK_NIL.
+int cxxScopeGetDefTag(void);
 
 // Return the number of components of the scope name.
 int cxxScopeGetSize(void);
@@ -68,11 +73,19 @@ enum CXXScopeAccess cxxScopeGetAccess(void);
 // Are we in global scope?
 bool cxxScopeIsGlobal(void);
 
+bool cxxScopeIsExported(void);
+
 // Add a token to the scope chain. The token ownership is transferred.
 void cxxScopePush(
 		CXXToken * t,
 		enum CXXScopeType eScopeType,
 		enum CXXScopeAccess eInitialAccess
+	);
+void cxxScopePushExported(
+		CXXToken * t,
+		enum CXXScopeType eScopeType,
+		enum CXXScopeAccess eInitialAccess,
+		bool exported
 	);
 void cxxScopeSetAccess(enum CXXScopeAccess eAccess);
 // Remove the last token from the scope chain

@@ -13,10 +13,12 @@
 #include "tokeninfo.h"
 
 #include "entry.h"
-#include "cpreprocessor.h"
+#include "x-cpreprocessor.h"
 #include "keyword.h"
 #include "parse.h"
+#include "ptrarray.h"
 #include "read.h"
+#include "trace.h"
 #include "xtag.h"
 
 #include <string.h>
@@ -27,20 +29,26 @@
 
 typedef enum {
 	LD_SCRIPT_SYMBOL_ENTRYPOINT,
+	LD_SCRIPT_SYMBOL_ALIASED,
 } ldScriptSymbolRole;
 
 static roleDefinition LdScriptSymbolRoles [] = {
 	{ true, "entrypoint", "entry points" },
+	{ true, "aliased", "aliased with __attribute__((alias(...))) in C/C++ code",
+	  .version = 1 },
 };
 
 typedef enum {
 	LD_SCRIPT_INPUT_SECTION_MAPPED,
 	LD_SCRIPT_INPUT_SECTION_DISCARDED,
+	LD_SCRIPT_INPUT_SECTION_DESTINATION,
 } ldScriptInputSectionRole;
 
 static roleDefinition LdScriptInputSectionRoles [] = {
 	{ true, "mapped",  "mapped to output section" },
 	{ true, "discarded", "discarded when linking" },
+	{ true, "destination", "specified as the destination of code and data",
+	  .version = 1 },
 };
 
 typedef enum {
@@ -56,7 +64,7 @@ static kindDefinition LdScriptKinds [] = {
 	  .referenceOnly = false, ATTACH_ROLES(LdScriptSymbolRoles)},
 	{ true, 'v', "version", "versions" },
 	{ true, 'i', "inputSection", "input sections",
-	  .referenceOnly = true, ATTACH_ROLES(LdScriptInputSectionRoles)},
+	  .referenceOnly = false, ATTACH_ROLES(LdScriptInputSectionRoles)},
 };
 
 enum {
@@ -91,6 +99,7 @@ static const keywordTable LdScriptKeywordTable[] = {
 	{ "INPUT_SECTION_FLAGS", KEYWORD_INPUT_SECTION_FLAGS },
 	{ "COMMON",			KEYWORD_COMMON },
 	{ "KEEP",			KEYWORD_KEEP },
+	{ "SORT",			KEYWORD_KEEP },
 	{ "BYTE",			KEYWORD_DATA },
 	{ "SHORT",			KEYWORD_DATA },
 	{ "LONG",			KEYWORD_DATA },
@@ -122,6 +131,7 @@ typedef struct sLdScriptToken {
 	tokenInfo base;
 	int scopeIndex;
 	tokenKeyword assignment;
+	bool whitespacePrefixed;
 } ldScriptToken;
 
 #define LDSCRIPT(TOKEN) ((ldScriptToken *)TOKEN)
@@ -178,6 +188,8 @@ static void copyToken (tokenInfo *dest, tokenInfo *src, void *data CTAGS_ATTR_UN
 		LDSCRIPT (src)->scopeIndex;
 	LDSCRIPT (dest)->assignment =
 		LDSCRIPT (src)->assignment;
+	LDSCRIPT (dest)->whitespacePrefixed =
+		LDSCRIPT (src)->whitespacePrefixed;
 }
 
 static int makeLdScriptTagMaybe (tagEntryInfo *const e, tokenInfo *const token,
@@ -195,8 +207,7 @@ static int makeLdScriptTagMaybe (tagEntryInfo *const e, tokenInfo *const token,
 	initRefTagEntry (e, tokenString (token),
 					 kind,
 					 role);
-	e->lineNumber = token->lineNumber;
-	e->filePosition = token->filePosition;
+	updateTagLine (e, token->lineNumber, token->filePosition);
 	e->extensionFields.scopeIndex = LDSCRIPT (token)->scopeIndex;
 
 	/* TODO: implement file: field. */
@@ -219,7 +230,7 @@ static int makeLdScriptTagMaybe (tagEntryInfo *const e, tokenInfo *const token,
 		}
 
 		if (assignment)
-			attachParserField (e, false, LdScriptFields[F_ASSIGNMENT].ftype,
+			attachParserField (e, LdScriptFields[F_ASSIGNMENT].ftype,
 							   assignment);
 	}
 
@@ -227,7 +238,8 @@ static int makeLdScriptTagMaybe (tagEntryInfo *const e, tokenInfo *const token,
 }
 
 #define isIdentifierChar(c)										\
-	(cppIsalnum (c) || (c) == '_' || (c) == '.' || (c) == '-' || (c) >= 0x80)
+	(cppIsalnum (c) || (c) == '_' || (c) == '.' || (c) == '-' \
+	 || (((c) >= 0x80) && ((c) <= 0xff)))
 
 static int readPrefixedToken (tokenInfo *const token, int type)
 {
@@ -253,6 +265,151 @@ static int readPrefixedToken (tokenInfo *const token, int type)
 	return n;
 }
 
+static bool collectMacroArguments (ptrArray *args)
+{
+	vString *s = vStringNew ();
+	tokenInfo *const t = newLdScriptToken ();
+	int depth = 1;
+
+	unsigned long ln = cppGetInputLineNumber ();
+	MIOPos pos = cppGetInputFilePosition ();
+	/* Above initial values for ln and pos are not used: just
+	   for suppressing compiler warnings. */
+
+	do
+	{
+		tokenRead (t);
+		if (s && vStringLength (s) == 0)
+		{
+			ln = t->lineNumber;
+			pos = t->filePosition;
+		}
+
+		if (tokenIsType (t, EOF))
+			break;
+		else if (tokenIsTypeVal (t, ')'))
+		{
+			depth--;
+			if (depth == 0)
+			{
+				cppMacroArg *a = cppMacroArgNew (vStringDeleteUnwrap (s), true,
+												 ln, pos);
+				ptrArrayAdd (args, a);
+				s = NULL;
+			}
+			else
+				vStringCat (s, t->string);
+		}
+		else if (tokenIsTypeVal (t, '('))
+		{
+			depth++;
+			vStringCat (s, t->string);
+		}
+		else if (tokenIsTypeVal (t, ','))
+		{
+			cppMacroArg *a = cppMacroArgNew (vStringDeleteUnwrap (s), true,
+											 ln, pos);
+			ptrArrayAdd (args, a);
+			s = vStringNew ();
+		}
+		else
+		{
+			if (LDSCRIPT(t)->whitespacePrefixed)
+				vStringPut(s, ' ');
+			vStringCat (s, t->string);
+		}
+	}
+	while (depth > 0);
+
+	vStringDelete (s);			/* NULL is acceptable. */
+
+	tokenDelete (t);
+
+	if (depth > 0)
+		TRACE_PRINT("unbalanced argument list");
+
+	return (depth > 0)? false: true;
+}
+
+static bool expandCppMacro (cppMacroInfo *macroInfo,
+							unsigned long lineNumber, MIOPos filePosition)
+{
+	ptrArray *args = NULL;
+
+	if (macroInfo->hasParameterList)
+	{
+		tokenInfo *const t = newLdScriptToken ();
+
+		/* Though macro arguments are expected, they are not found. */
+		tokenRead (t);
+		if (!tokenIsTypeVal (t, '('))
+		{
+			tokenUnread (t);
+			tokenDelete (t);
+			TRACE_PRINT("no argument for the %s<%p>", macroInfo->name, macroInfo);
+			return false;
+		}
+
+		args = ptrArrayNew (cppMacroArgDelete);
+		if (!collectMacroArguments (args))
+		{
+			ptrArrayDelete (args);
+			tokenUnread (t);
+			tokenDelete (t);
+			return false;
+		}
+		tokenDelete (t);
+	}
+
+#ifdef DO_TRACING
+	if (args)
+	{
+		for (int i = 0; i < ptrArrayCount(args); i++)
+			TRACE_PRINT("[%d] %s", i, (const char *)ptrArrayItem (args, i));
+	}
+#endif
+
+	{
+		cppMacroTokens *tokens = cppExpandMacro (macroInfo, args,
+												 lineNumber, filePosition);
+		cppUngetMacroTokens (tokens);
+	}
+
+	ptrArrayDelete (args);		/* NULL is acceptable. */
+	return true;
+}
+
+static void processCppMacroX (tokenInfo *const token)
+{
+	if (cppUngetBufferSize() >= CPP_MAXIMUM_UNGET_BUFFER_SIZE_FOR_MACRO_REPLACEMENTS)
+	{
+		TRACE_PRINT ("Ungetbuffer overflow when processing \"%s\": %d",
+					 vStringValue (token->string), cppUngetBufferSize());
+		return;
+	}
+
+	cppMacroInfo *macroInfo = cppFindMacro (vStringValue (token->string));
+	if (macroInfo)
+	{
+		TRACE_PRINT("Macro expansion: %s<%p>%s", vStringValue (token->string),
+					macroInfo, macroInfo->hasParameterList? "(...)": "");
+
+		if (macroInfo->useCount >= CPP_MAXIMUM_MACRO_USE_COUNT)
+		{
+			TRACE_PRINT ("Overly used macro %s<%p> useCount: %d (> %d)",
+						 vStringValue (token->string), macroInfo, macroInfo->useCount,
+						 CPP_MAXIMUM_MACRO_USE_COUNT);
+			return;
+		}
+
+		if (!macroInfo->replacements)
+			return;
+
+		if (expandCppMacro (macroInfo, token->lineNumber, token->filePosition))
+			readToken (token, NULL);
+	}
+}
+
 static void readToken (tokenInfo *const token, void *data CTAGS_ATTR_UNUSED)
 {
 	int c, c0, c1;
@@ -261,13 +418,18 @@ static void readToken (tokenInfo *const token, void *data CTAGS_ATTR_UNUSED)
 	token->keyword	= KEYWORD_NONE;
 	vStringClear (token->string);
 
+	int prefix_count = -1;
+	LDSCRIPT (token)->whitespacePrefixed = false;
 	do {
 		c = cppGetc();
+		prefix_count++;
+		if (prefix_count > 0)
+			LDSCRIPT (token)->whitespacePrefixed = true;
 	} while (c == ' ' || c== '\t' || c == '\f' || c == '\r' || c == '\n'
-			 || c == STRING_SYMBOL || c == CHAR_SYMBOL);
+			 || c == CPP_STRING_SYMBOL || c == CPP_CHAR_SYMBOL);
 
-	token->lineNumber   = getInputLineNumber ();
-	token->filePosition = getInputFilePosition ();
+	token->lineNumber   = cppGetInputLineNumber ();
+	token->filePosition = cppGetInputFilePosition ();
 
 	switch (c)
 	{
@@ -281,6 +443,7 @@ static void readToken (tokenInfo *const token, void *data CTAGS_ATTR_UNUSED)
 	case '}':
 	case '[':
 	case ']':
+		tokenPutc(token, c);
 		token->type = c;
 		break;
 	case '~':
@@ -453,12 +616,18 @@ static void readToken (tokenInfo *const token, void *data CTAGS_ATTR_UNUSED)
 			}
 			token->keyword = lookupKeyword (vStringValue (token->string), Lang_ldscript);
 			if (token->keyword == KEYWORD_NONE)
+			{
 				token->type = TOKEN_IDENTIFIER;
+				processCppMacroX (token);
+			}
 			else
 				token->type = TOKEN_KEYWORD;
 		}
 		else
+		{
+			tokenPutc(token, c);
 			token->type = c;
+		}
 		break;
 	}
 }
@@ -682,12 +851,35 @@ static void parseVersions (tokenInfo *const token)
 	tokenRead (token);
 	if (token->type == '{')
 	{
+		tokenInfo *curly = newTokenByCopying(token);
+		tokenRead (token);
+		if (token->type == '{')
+		{
+			vString *anonver = anonGenerateNew ("ver", K_VERSION);
+			{
+				tagEntryInfo e;
+				initTagEntry (&e, vStringValue (anonver), K_VERSION);
+				updateTagLine (&e, token->lineNumber, token->filePosition);
+				makeTagEntry (&e);
+			}
+			vStringDelete(anonver);
+			tokenUnread (token);
+			tokenSkipOverPair (curly);
+			tokenCopy (token, curly);
+			tokenDelete (curly);
+			return;
+		}
+		tokenDelete (curly);
+		tokenUnread (token);
+
 		do {
 			tokenRead (token);
 			if (tokenIsType(token, IDENTIFIER))
+			{
 				parseVersion (token);
+				tokenSkipToType (token, ';');
+			}
 		} while (! (tokenIsEOF (token) || token->type == '}'));
-		tokenSkipToType (token, ';');
 	}
 }
 
@@ -697,7 +889,8 @@ static void findLdScriptTags (void)
 	tokenInfo *const tmp = newLdScriptToken ();
 
 	cppInit (false, false, false, false,
-			 KIND_GHOST_INDEX, 0, KIND_GHOST_INDEX,
+			 KIND_GHOST_INDEX, 0, 0,
+			 KIND_GHOST_INDEX,
 			 KIND_GHOST_INDEX, 0, 0,
 			 FIELD_UNKNOWN);
 
@@ -739,12 +932,12 @@ extern parserDefinition* LdScriptParser (void)
 {
 	parserDefinition* def = parserNew ("LdScript");
 
-	/* File name patters are picked from Linux kernel and ecos. */
+	/* File name patterns are picked from Linux kernel and ecos. */
 	static const char *const extensions [] = { "lds", "scr", "ld", "ldi", NULL };
 
 	/* lds.S must be here because Asm parser registers .S as an extension.
 	 * ld.script is used in linux/arch/mips/boot/compressed/ld.script. */
-	static const char *const patterns [] = { "*.lds.S", "ld.script", NULL };
+	static const char *const patterns [] = { "*.lds.S", "*.ld.S", "ld.script", NULL };
 
 	/* Emacs's mode */
 	static const char *const aliases [] = { "ld-script", NULL };
@@ -759,11 +952,13 @@ extern parserDefinition* LdScriptParser (void)
 	def->aliases    = aliases;
 	def->keywordTable = LdScriptKeywordTable;
 	def->keywordCount = ARRAY_SIZE (LdScriptKeywordTable);
-	def->initialize = initialize;
 	def->fieldTable = LdScriptFields;
 	def->fieldCount = ARRAY_SIZE (LdScriptFields);
 
-	def->useCork    = CORK_QUEUE;
+	def->useCork    = CORK_QUEUE|CORK_SYMTAB;
+
+	def->versionCurrent = 1;
+	def->versionAge = 1;
 
 	return def;
 }

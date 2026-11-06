@@ -41,7 +41,9 @@ extern unsigned int ptrArrayCount (const ptrArray *const current);
 extern void* ptrArrayItem (const ptrArray *const current, const unsigned int indx);
 extern void* ptrArrayItemFromLast (const ptrArray *const current, const unsigned int indx);
 #define ptrArrayLast(A) ptrArrayItemFromLast(A, 0)
-extern void ptrArrayDelete (ptrArray *const current);
+extern void ptrArrayUnref (ptrArray *const current);
+#define ptrArrayDelete ptrArrayUnref
+extern void ptrArrayRef(ptrArray *const current);
 extern bool ptrArrayHasTest (const ptrArray *const current,
 				  bool (*test)(const void *ptr, void *userData),
 				  void *userData);
@@ -52,5 +54,7 @@ extern void*ptrArrayRemoveItem (ptrArray* const current, unsigned int indx);
 extern void ptrArrayInsertItem (ptrArray* const current, unsigned int indx, void *ptr);
 
 extern void ptrArraySort (ptrArray *const current, int (*compare)(const void *, const void *));
+extern void ptrArraySortR (ptrArray *const current, int (*compare)(const void *, const void *, void *),
+						   void *userData);
 
 #endif  /* CTAGS_MAIN_PTRARRAY_H */

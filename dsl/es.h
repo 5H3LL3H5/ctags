@@ -114,7 +114,7 @@ int          es_boolean_get (const EsObject*   object);
  * String
  */
 EsObject*    es_string_new  (const char*        value);
-EsObject*    es_string_newL (const char*        value, size_t lenght);
+EsObject*    es_string_newL (const char*        value, size_t length);
 int          es_string_p    (const EsObject*   object);
 const char*  es_string_get  (const EsObject*   object);
 
@@ -158,6 +158,12 @@ EsObject*    es_regex_compile (const char* pat,
 int          es_regex_p       (const EsObject* object);
 EsObject*    es_regex_exec    (const EsObject* regex,
 							   const EsObject* str);
+
+/* Return #f if unmatched.
+ * Return NIL is the associate group is not in REGEX. */
+EsObject*    es_regex_exec_extract_match_new (const EsObject* regex,
+											  const EsObject* str,
+											  unsigned int group);
 
 /*
  * Foreign pointer
@@ -247,7 +253,7 @@ EsObject* es_srealize  (const char* fmt,...);
 EsObject* es_map   (EsObject * (*fn) (EsObject *, void *),
 					EsObject *list, void *user_data);
 
-/* Unlike es_map, the value returnd from FN is not accumulated.
+/* Unlike es_map, the value returned from FN is not accumulated.
  * If FN returns a value other than #f, es_foreach stops the
  * iteration immediately and returns the value.
  */

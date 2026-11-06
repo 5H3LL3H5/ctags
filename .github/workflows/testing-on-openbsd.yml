@@ -1,0 +1,54 @@
+name: run units target on OpenBSD
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  testing:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        openbsd-version: ['8.0', '7.9', '7.8', '7.7', '7.6']
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: cross-platform-actions/action@master
+        with:
+          operating_system: openbsd
+          version: ${{ matrix.openbsd-version }}
+          shell: bash
+          run: |
+            run() {
+              printf "\033[0;35m==>\033[0m \033[0;32m%b\n\033[0m" "$*"
+              eval "$@"
+            }
+
+            export AUTOCONF_VERSION=2.72
+            export AUTOMAKE_VERSION=1.16
+
+            export  CFLAGS='-I/usr/local/include'
+            export LDFLAGS='-L/usr/local/lib'
+
+            run sudo pkg_add autoconf%2.72 automake%1.16 gmake pkgconf jansson libyaml libxml libiconv
+
+            run cc --version
+
+            run ./autogen.sh
+            run ./configure --prefix=/usr
+            run gmake
+            run sudo gmake install
+
+            run readelf -h /usr/bin/ctags
+            run readelf -d /usr/bin/ctags
+
+            run ctags --version
+
+            # bugs to fix
+            #run make check CI=gha+vagrant+openbsd
+            run gmake roundtrip CI=gha+vagrant+openbsd

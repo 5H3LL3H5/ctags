@@ -6,7 +6,7 @@ ctags-lang-r
 
 Random notes about tagging R source code with Universal Ctags
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 7
 
@@ -14,7 +14,7 @@ SYNOPSIS
 --------
 |	**ctags** ... --languages=+R ...
 |	**ctags** ... --language-force=R ...
-|	**ctags** ... --map-Python=+.r ...
+|	**ctags** ... --map-R=+.r ...
 
 DESCRIPTION
 -----------

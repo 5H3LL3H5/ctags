@@ -67,7 +67,7 @@ Summary
 	==== ========== ================== ===================
 	`X`  module     namespace          N/A
 	`Y`  unknown    indirectlyImported scope:module:`X`
-	`Z`  unknown    definition         nameref:unknown:`X`
+	`Z`  unknown    definition         nameref:unknown:`Y`
 	==== ========== ================== ===================
 
 ..
@@ -82,7 +82,7 @@ Summary
 	from X import Y       Y    unknown    imported           scope:module:X
 	from X import Y as Z  X    module     namespace
 	from X import Y as Z  Y    unknown    indirectlyImported scope:module:X
-	from X import Y as Z  Z    unknown    definition         nameref:unknown:X
+	from X import Y as Z  Z    unknown    definition         nameref:unknown:Y
 	===================== ==== ========== ================== ===================
 
 ..  a table having merged cells cannot be converted to man page
@@ -280,6 +280,20 @@ There is a reason. The other languages of ctags obey the following rule: ctags f
 of its return value. If we consider "id_t" is a function, its ``typeref:`` field
 should have "typename:int". However, for filling ``typeref:`` with "typename:int",
 ctags has to analyze "Callable[[int], int]" deeper. We don't want to do so.
+
+VERSIONS
+--------
+
+Change since "0.0"
+~~~~~~~~~~~~~~~~~~
+
+* New role ``entryPoint`` for ``module`` kind
+
+  PythonEntryPoints parser emits tag entries having this role.
+
+* New role ``entryPoint`` for  ``function`` kind
+
+  PythonEntryPoints parser emits tag entries having this role.
 
 SEE ALSO
 --------

@@ -16,7 +16,7 @@
 #include "parse.h"
 #include "read.h"
 #include "routines.h"
-#include "xml.h"
+#include "x-xml.h"
 
 #include <string.h>
 
@@ -47,8 +47,7 @@ makeTagEntryWithNodeNotify (xmlSubparser *s,
 	{
 		tagEntryInfo tag;
 		initTagEntry (&tag, xmlTag->name, K_DEF);
-		tag.filePosition = xmlTag->filePosition;
-		tag.lineNumber = xmlTag->lineNumber;
+		updateTagLine (&tag, xmlTag->lineNumber, xmlTag->filePosition);
 		makeTagEntry (&tag);
 	}
 }

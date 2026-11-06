@@ -78,7 +78,7 @@ struct fyppParseCtx {
 
 	   if_tracker field tracks the branches. When the parser enters #:if area,
 	   it appends 1 to if_tracker. When it enters #:elif or #:else area,
-	   it repalces 1 with 0. When it reaches at #:endif, remove the last
+	   it replaces 1 with 0. When it reaches at #:endif, remove the last
 	   element from the field. The product of if_tracker should be either
 	   0 or 1. In the case that the product is 1, we can say the current line
 	   is in the first if block.
@@ -214,9 +214,7 @@ static bool macro_end_cb (const char *line,
 {
 	struct fyppParseCtx *ctx = userData;
 
-	tagEntryInfo *e = getEntryInCorkQueue (ctx->macro_cork_index);
-	if (e)
-		e->extensionFields.endLine = getInputLineNumber ();
+	setTagEndLineToCorkEntry (ctx->macro_cork_index, getInputLineNumber ());
 	ctx->macro_cork_index = CORK_NIL;
 
 	fypp_end_cb (line, matches, count, userData);
@@ -373,7 +371,7 @@ static void findFyppTags (void)
 	{
 		promise = makePromise (vStringValue(fyppGuestParser),
 							   1, 0,
-							   getInputLineNumber(), 0,
+							   getInputLineNumber(), EOL_COLUMN,
 							   0);
 		if (promise >= 0)
 			promiseAttachLineFiller (promise, parseCtx.fypp_lines);
@@ -425,7 +423,7 @@ static void finalizeFyppParser (langType language, bool initialized)
 	}
 }
 
-static void fyppSetGuestParser (const langType language CTAGS_ATTR_UNUSED,
+static bool fyppSetGuestParser (const langType language CTAGS_ATTR_UNUSED,
 								const char *optname CTAGS_ATTR_UNUSED, const char *arg)
 {
 	if (!strcmp (arg, RSV_NONE))
@@ -435,7 +433,7 @@ static void fyppSetGuestParser (const langType language CTAGS_ATTR_UNUSED,
 			vStringDelete (fyppGuestParser);
 			fyppGuestParser = NULL;
 		}
-		return;
+		return true;
 	}
 
 	langType lang = getNamedLanguage (arg, strlen(arg));
@@ -447,12 +445,15 @@ static void fyppSetGuestParser (const langType language CTAGS_ATTR_UNUSED,
 	else
 		fyppGuestParser = vStringNew();
 	vStringCatS (fyppGuestParser, arg);
+
+	return true;
 }
 
-static parameterHandlerTable FyppParameterHandlerTable [] = {
-	{ .name = "guest",
-	  .desc = "parser run after Fypp parser parses the original input (\"NONE\" or a parser name [Fortran])" ,
-	  .handleParameter = fyppSetGuestParser,
+static paramDefinition FyppParams [] = {
+	{
+		.name = "guest",
+		.desc = "parser run after Fypp parser parses the original input (\"NONE\" or a parser name [Fortran])" ,
+		.handleParam = fyppSetGuestParser,
 	},
 };
 
@@ -468,8 +469,8 @@ extern parserDefinition* FyppParser (void)
 	def->finalize   = finalizeFyppParser;
 	def->method     = METHOD_REGEX;
 
-	def->parameterHandlerTable = FyppParameterHandlerTable;
-	def->parameterHandlerCount = ARRAY_SIZE(FyppParameterHandlerTable);
+	def->paramTable = FyppParams;
+	def->paramCount = ARRAY_SIZE(FyppParams);
 
 	def->useCork = CORK_QUEUE;
 

@@ -40,7 +40,7 @@ extern const char *flagsEval (const char* flags_original, flagDefinition* defs, 
 		}
 		else if (flags [i] == LONG_FLAGS_OPEN)
 		{
-			const char* aflag = flags + i + 1;
+			char* aflag = flags + i + 1;
 			char* needle_close_paren = strchr(aflag, LONG_FLAGS_CLOSE);
 			const char* param;
 			char* needle_equal;

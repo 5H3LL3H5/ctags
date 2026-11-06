@@ -7,7 +7,10 @@
 #	Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.64])
-AC_INIT([universal-ctags],[5.9.0])
+
+dnl You must update PROGRAM_VERSION in main/ctags.h, too.
+dnl --version option of readtags also prints this.
+AC_INIT([universal-ctags],[6.2.0])
 
 if ! test -e "${srcdir}/config.h.in"; then
    echo "---"
@@ -41,6 +44,13 @@ case $host in
             printf "\n%s\n" "macOS not support --enable-static." >&6
             exit 1
         fi
+        ;;
+    *freebsd*|*openbsd*)
+        if test "$cross_compiling" = "no" ; then
+            # https://github.com/universal-ctags/ctags/issues/3338
+            export LDFLAGS="$LDFLAGS -L/usr/local/lib"
+        fi
+        ;;
 esac
 
 AH_TEMPLATE([PACKAGE], [Package name.])
@@ -70,7 +80,7 @@ AH_TEMPLATE([CUSTOM_CONFIGURATION_FILE],
 AH_TEMPLATE([ETAGS],
 	[Define the string to check (in executable name) for etags mode])
 AH_TEMPLATE([MACROS_USE_PATTERNS],
-	[Define this label if you want macro tags (defined lables) to use patterns
+	[Define this label if you want macro tags (defined labels) to use patterns
 	in the EX command by default (original ctags behavior is to use line
 	numbers).])
 AH_VERBATIM([DEFAULT_FILE_FORMAT], [
@@ -102,6 +112,10 @@ AH_TEMPLATE([NON_CONST_PUTENV_PROTOTYPE],
 	doesn't declare its argument as "const char *".])
 AH_TEMPLATE([MSDOS_STYLE_PATH],
 	[Define to 1 if your system uses MS-DOS style path.])
+AH_TEMPLATE([MANUAL_GLOBBING],
+	[Define to 1 if your system doesn't expand wildcards.])
+AH_TEMPLATE([HAVE__FINDFIRST],
+	[Define to 1 if your system have _findfirst().])
 AH_TEMPLATE([ENABLE_GCOV],
 	[Define to 1 if gcov is instrumented.])
 AH_TEMPLATE([USE_GNULIB_FNMATCH],
@@ -168,10 +182,6 @@ AC_ARG_ENABLE(readcmd,
 		[do not include readtags command during install])],
 	[], [enable_readcmd=yes])
 
-# AC_ARG_WITH(perl-regex,
-# 	[AS_HELP_STRING([--with-perl-regex],
-# 	    [use Perl pcre interface, if available])])
-
 AC_ARG_ENABLE(etags,
 	[AS_HELP_STRING([--enable-etags],
 		[enable the installation of links for etags])])
@@ -210,6 +220,10 @@ AC_ARG_ENABLE([static],
 	[AS_HELP_STRING([--enable-static],
 		[enable static linking (mainly for MinGW)])])
 
+AC_ARG_ENABLE([lto],
+	[AS_HELP_STRING([--enable-lto],
+		[enable link time optimization])])
+
 AC_ARG_PROGRAM
 
 # Process configuration options
@@ -246,11 +260,14 @@ AM_CONDITIONAL(ENABLE_DEBUGGING, [test "x$enable_debugging" = "xyes"])
 
 AC_PROG_CC
 AC_PROG_CC_C99
+AC_C_INLINE
 # For gnulib.
 #  Typically, this is immediately after AC_PROG_CC, ...
 gl_EARLY
 
+AC_ARG_VAR(RANLIB,[ranlib command or path])
 AC_PROG_RANLIB
+PRETTY_ARG_VAR([AR], [ar command or path], [ar])
 AC_C_BIGENDIAN
 
 if test "$cross_compiling" = "yes"; then
@@ -284,7 +301,7 @@ if test "$cross_compiling" = "yes"; then
 
     BUILD_OBJEXT='o'
 
-    if [ -f "$TEMP_DIR_FOR_CHECKING/test.exe" ] ; then
+    if test -f "$TEMP_DIR_FOR_CHECKING/test.exe" ; then
         BUILD_EXEEXT='.exe'
     fi
 else
@@ -310,14 +327,8 @@ AC_SUBST([LDFLAGS_FOR_BUILD])
 AC_SUBST([BUILD_OBJEXT])
 AC_SUBST([BUILD_EXEEXT])
 
-AC_ARG_VAR(AR,[ar command or path])
-AC_ARG_VAR(RANLIB,[ranlib command or path])
 AC_ARG_VAR(WINDRES,[windres command or path, used with mingw-w64])
 AC_SUBST([WINDRES])
-
-if test "x${AR}" = "x" ; then
-    AR=ar
-fi
 
 if test "x${WINDRES}" = "x" ; then
     WINDRES=windres
@@ -346,13 +357,37 @@ AC_PROG_LN_S
 AC_CHECK_PROG(STRIP, strip, strip, :)
 AC_SYS_LARGEFILE
 
-AC_CHECK_PROGS([perl_found], [perl], [yes], [no])
+AC_CHECK_PROG([perl_found], [perl], [yes], [no])
 AM_CONDITIONAL([RUN_OPTLIB2C], [test "${perl_found}" = "yes"])
 AM_CONDITIONAL([RUN_TXT2CSTR], [test "${perl_found}" = "yes"])
 
-AC_PATH_PROGS(RST2MAN, [rst2man rst2man.py rst2man-3 rst2man-3.6 rst2man-3.7 rst2man-3.8 rst2man-3.9], [no])
+# rst2man and rst2html are part of python-docutils, and if not found
+# 	can be installed using pip ("pip install docutils"). On some
+#	systems, rst2man and rst2html are actually installed as rst2man.py
+#	and rst2html.py - create a symlink of that's the case.
+#	Also, allow to define path as "--with-rst2man" and "--with-rst2html".
+AC_ARG_WITH([rst2man],
+  AS_HELP_STRING([--with-rst2man=PATH], [Location of rst2man (auto)]),
+  [RST2MAN="$withval"],
+  [AC_PATH_PROGS(RST2MAN,
+    [rst2man rst2man.py rst2man-3 rst2man-3.6 rst2man-3.7 rst2man-3.8 rst2man-3.9, rst2man-3.10],
+    [no])])
 AM_CONDITIONAL([HAVE_RST2MAN], [test "x$RST2MAN" != "xno"])
+AC_ARG_WITH([rst2html],
+  AS_HELP_STRING([--with-rst2html=PATH], [Location of rst2html (auto)]),
+  [RST2HTML="$withval"],
+  [AC_PATH_PROGS(RST2HTML,
+    [rst2html rst2html.py rst2html-3 rst2html-3.6 rst2html-3.7 rst2html-3.8 rst2html-3.9, rst2html-3.10],
+    [no])])
+AM_CONDITIONAL([HAVE_RST2HTML], [test "x$RST2HTML" != "xno"])
 
+# rst2pdf is a separate tool and can also be installed via pip (e.g.,
+# 	"pip install rst2pdf")
+AC_PATH_PROGS(RST2PDF, [rst2pdf], [no])
+AM_CONDITIONAL([HAVE_RST2PDF], [test "x$RST2PDF" != "xno"])
+
+# rst2man had a bug about code-block:: handling.
+# https://sourceforge.net/p/docutils/patches/141
 RST2MAN_OPTIONS=
 if ! test "x$RST2MAN" = "xno"; then
    RST2MAN_SUPPORTING_SYNTAX_HIGHLIGHT_OPTION=no
@@ -365,6 +400,15 @@ if ! test "x$RST2MAN" = "xno"; then
    AC_MSG_RESULT($RST2MAN_SUPPORTING_SYNTAX_HIGHLIGHT_OPTION)
 fi
 AC_SUBST(RST2MAN_OPTIONS)
+AM_CONDITIONAL([HAS_GNU_SED], [sed --version 2>/dev/null | grep -q GNU])
+
+AC_ARG_WITH([pegof],
+  AS_HELP_STRING([--with-pegof=PATH], [Location of pegof (auto)]),
+  [PEGOF="$withval"],
+  [AC_PATH_PROGS(PEGOF,
+    [pegof],
+    [no])])
+AM_CONDITIONAL([HAVE_PEGOF], [test "x$PEGOF" != "xno"])
 
 # Checks for operating environment
 # --------------------------------
@@ -407,11 +451,17 @@ elif test -d "c:/"; then
 else
 	tmpdir="/tmp"
 fi
-if test -d $tmpdir ; then
-	AC_MSG_RESULT($tmpdir)
-	AC_DEFINE_UNQUOTED(TMPDIR, "$tmpdir")
+
+if test "$cross_compiling" = yes ; then
+        AC_MSG_RESULT($tmpdir)
+        AC_DEFINE_UNQUOTED(TMPDIR, "$tmpdir")
 else
-	AC_MSG_ERROR($tmpdir does not exist)
+    if test -d $tmpdir ; then
+        AC_MSG_RESULT($tmpdir)
+        AC_DEFINE_UNQUOTED(TMPDIR, "$tmpdir")
+    else
+        AC_MSG_ERROR($tmpdir does not exist)
+    fi
 fi
 
 # Test for case-insensitive filenames
@@ -476,7 +526,6 @@ AC_CHECK_HEADERS([stdbool.h])
 AC_C_CONST
 AC_OBJEXT
 AC_EXEEXT
-AC_C_TYPEOF
 
 if test "${enable_static}" = "yes"; then
 	LDFLAGS="$LDFLAGS -static"
@@ -489,6 +538,11 @@ case "$host" in
 	# See https://github.com/universal-ctags/ctags/pull/3069
 	gl_cv_have_weak=no
 	AC_DEFINE(MSDOS_STYLE_PATH)
+	AC_DEFINE(MANUAL_GLOBBING)
+	AC_DEFINE(HAVE__FINDFIRST)
+	;;
+  *-cygwin | *-msys)
+	gl_cv_have_weak=no
 	;;
 esac
 AM_CONDITIONAL([HOST_MINGW], [test "x${host_mingw}" = "xyes"])
@@ -528,9 +582,59 @@ PRETTY_ARG_VAR([DEBUG_CPPFLAGS], [(Objective) C/C++ preprocessor debug flags],
 	       [-DDEBUG])
 
 PRETTY_ARG_VAR([EXTRA_CFLAGS], [extra C compiler flags],
-	       [-std=gnu99])
+	       [-std=c99])
 PRETTY_ARG_VAR([WARNING_CFLAGS], [C compiler warning flags],
 	       [-Wall])
+
+PRETTY_ARG_VAR([EXTRA_LDFLAGS], [extra linker flags],
+	       [])
+
+dnl ref. https://stackoverflow.com/questions/40374061/autoconf-recipe-to-use-gcc-ar-and-gcc-ranlib
+use_lto=no
+
+AS_IF([test "x$cross_compiling" != "xyes" -a "x$enable_lto" = "xyes"],[
+		AX_CHECK_COMPILE_FLAG(-flto,[use_lto=yes])])
+AS_VAR_IF([use_lto], [yes], [
+	AS_CASE($CC,
+		[gcc|*/gcc],     [AC_CHECK_PROGS([LTO_AR], [gcc-ar ar],   [:])],
+		[clang|*/clang], [AC_CHECK_PROGS([LTO_AR], [clang-ar ar], [:])],
+		[use_lto=no])
+	AC_MSG_CHECKING([the wrapper for ar working with $CC -flto])
+	AS_VAR_IF([LTO_AR], [:], AC_MSG_ERROR([could not find AR tool working with -flto.]))
+	AS_VAR_IF([use_lto], [yes],
+		[AS_CASE($LTO_AR,
+			[*-ar],[AC_MSG_RESULT([$LTO_AR])],
+			[use_lto=no
+			 AC_MSG_RESULT([no suitable AR tool is found; truning off LTO])])],
+		[AC_MSG_RESULT([no suitable AR tool is found; truning off LTO])])
+])
+AS_VAR_IF([use_lto], [yes], [
+	AS_CASE($CC,
+		[gcc|*/gcc],     [AC_CHECK_PROGS([LTO_RANLIB], [gcc-ranlib ranlib],  [:])],
+		[clang|*/clang], [AC_CHECK_PROGS([LTO_RANLIB], [clang-ranlib ranlib], [:])],
+		[use_lto=no])
+	AC_MSG_CHECKING([the wrapper for ranlib working with $CC -flto])
+	AS_VAR_IF([LTO_RANLIB], [:], AC_MSG_ERROR([could not find RANLIB tool working with -flto.]))
+	AS_VAR_IF([use_lto], [yes],
+		[AS_CASE($LTO_RANLIB,
+			[*-ranlib],[AC_MSG_RESULT([$LTO_RANLIB])],
+			[use_lto=no
+			 AC_MSG_RESULT([no suitable ranlib tool is found; truning off LTO])])],
+		[AC_MSG_RESULT([no suitable ranlib is found; truning off LTO])])
+])
+AS_VAR_IF([use_lto], [yes], [
+	AR="$LTO_AR"
+	RANLIB="$LTO_RANLIB"
+	EXTRA_CFLAGS="$EXTRA_CFLAGS -flto"
+	EXTRA_LDFLAGS="$EXTRA_LDFLAGS -flto"
+],[
+	AS_VAR_IF([enable_lto], [yes], [
+		AC_MSG_ERROR([though --enable-lto is specified, the fto feature is not available nor usable.])
+	])
+])
+
+# Checks for function availability
+# -----------------------------------
 
 # For gnulib.
 #   Place it further down in the file, typically where you normally check for
@@ -542,7 +646,6 @@ if test "$REPLACE_FNMATCH" != 0; then
 fi
 
 AC_CHECK_FUNCS(asprintf)
-AC_CHECK_FUNCS(strstr)
 AC_CHECK_FUNCS(strcasecmp stricmp, break)
 AC_CHECK_FUNCS(strncasecmp strnicmp, break)
 
@@ -558,7 +661,7 @@ if test "$have_mkstemp" != yes -a "$have_tempnam" != yes; then
 fi
 
 AC_CHECK_FUNCS(opendir findfirst _findfirst, break)
-AC_CHECK_FUNCS(strerror)
+AC_CHECK_FUNCS(strerror strsignal)
 
 AC_CHECK_FUNCS(truncate, have_truncate=yes)
 # === Cannot nest AC_CHECK_FUNCS() calls
@@ -609,11 +712,61 @@ dnl About the condition of version
 dnl see https://mail.gnome.org/archives/xml/2010-February/msg00008.html
 AS_IF([test "x$enable_xml" != "xno"], [
 	PKG_CHECK_MODULES(LIBXML, [libxml-2.0 >= 2.7.7],
-			       [have_libxml=yes
-			       AC_DEFINE(HAVE_LIBXML)],
-			       [AS_IF([test "x$enable_xml" = "xyes"], [
-			           AC_MSG_ERROR([libxml2 not found])])])
+				[AC_MSG_CHECKING([libxml-2.0 CRLF handling bug])
+				 ORIGINAL_CFLAGS=$CFLAGS
+				 ORIGINAL_LIBS=$LIBS
+				 CFLAGS="$CFLAGS $LIBXML_CFLAGS"
+				 LIBS="$LIBS $LIBXML_LIBS"
+				 AC_RUN_IFELSE([AC_LANG_SOURCE([[
+				 #include <libxml/parser.h>
+				 #include <libxml/tree.h>
+				 #include <string.h>
+
+				 #define CRLF "\r\n"
+				 #define __LF  " \n"
+
+				 const char * crlf = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?><root><!---->"CRLF CRLF"<target/></root>";
+				 const char * __lf = "<?xml version=\"1.0\" encoding=\"UTF-8\" ?><root><!---->"__LF __LF"<target/></root>";
+
+				 static int run(const char *input)
+				 {
+					xmlDocPtr doc = xmlParseMemory(input, strlen(input));
+					xmlNode *root = xmlDocGetRootElement(doc);
+					xmlNode *node = root->children->next->next;
+					return  node->line;
+				 }
+
+				 int main(void)
+				 {
+					xmlLineNumbersDefault (1);
+					return run(crlf) == run(__lf)? 0: 1;
+				 }]])],[AC_MSG_RESULT([good])
+					have_libxml=yes
+					CFLAGS=$ORIGINAL_CFLAGS
+					LIBS=$ORIGINAL_LIBS
+					AC_DEFINE(HAVE_LIBXML)],
+				    [AC_MSG_RESULT([bad])
+				    AC_MSG_WARN([Xpath feature is disabled because the way of handling CRLF in libxml2 is broken.
+See https://gitlab.gnome.org/GNOME/libxml2/-/commit/43b511fa714df875dc4f40d108061eede0d4d76b])],
+				    dnl In a context of cross-compiling: We can not do try-run.
+				    dnl Instead, we check the version number only.
+				    [PKG_CHECK_MODULES(LIBXML12d0, [libxml-2.0 = 2.12.0],
+								   [AC_MSG_WARN([Xpath feature is disabled because the way of handling CRLF in libxml2 2.12.0 may be broken.
+See https://gitlab.gnome.org/GNOME/libxml2/-/commit/43b511fa714df875dc4f40d108061eede0d4d76b])
+								    have_libxml=no],[
+				     PKG_CHECK_MODULES(LIBXML12d1, [libxml-2.0 = 2.12.1],
+								   [AC_MSG_WARN([Xpath feature is disabled because the way of handling CRLF in libxml2 2.12.1 may be broken.
+See https://gitlab.gnome.org/GNOME/libxml2/-/commit/43b511fa714df875dc4f40d108061eede0d4d76b])
+								    have_libxml=no],
+				     dnl The available libxml-2.0 is not 2.12.[01].
+								   [have_libxml=yes
+								    AC_DEFINE(HAVE_LIBXML)
+								   ])])]
+				)],
+				[AS_IF([test "x$enable_xml" = "xyes"], [
+				   AC_MSG_ERROR([libxml2 not found])])])
 ])
+
 AM_CONDITIONAL(HAVE_LIBXML, test "x$have_libxml" = xyes)
 
 if test "${enable_static}" = "yes"; then
@@ -624,6 +777,32 @@ if test "${enable_static}" = "yes"; then
 		fi
 	fi
 fi
+
+dnl https://stackoverflow.com/questions/40798571/autoconf-detect-deprecated-functions-in-glibc
+AH_TEMPLATE([IS_xmlLineNumbersDefault_DEPRECATED],
+	[Define this value if xmlLineNumbersDefault is marked as a deprecated function.])
+AS_VAR_IF([have_libxml], [yes], [
+	CC_CHECK_WERROR
+	AS_VAR_IF([cc_cv_werror],[x],[],[
+		have_deprecated_attr=
+		CC_CHECK_CFLAGS_APPEND([-Wdeprecated-declarations], [have_deprecated_attr=yes])
+		AS_VAR_IF([have_deprecated_attr], [yes], [
+			SAVE_CFLAGS=$CFLAGS
+			CFLAGS="$CFLAGS $LIBXML_CFLAGS $cc_cv_werror -Wdeprecated-declarations"
+			AC_MSG_CHECKING([whether xmlLineNumbersDefault is deprecated])
+			AC_COMPILE_IFELSE([AC_LANG_PROGRAM([
+				#include <libxml/parser.h>
+			],[
+				int main (void) {xmlLineNumbersDefault (1); return 0;}
+			])],[is_xmlLineNumbersDefault_deprecated=no],[is_xmlLineNumbersDefault_deprecated=yes])
+			CFLAGS=$SAVE_CFLAGS
+			AC_MSG_RESULT($is_xmlLineNumbersDefault_deprecated)
+			AS_VAR_IF([is_xmlLineNumbersDefault_deprecated],[yes],[
+				AC_DEFINE(IS_xmlLineNumbersDefault_DEPRECATED)
+			])
+		])
+	])
+])
 
 AC_ARG_ENABLE([json],
 	[AS_HELP_STRING([--disable-json],
@@ -671,6 +850,30 @@ AS_IF([test "x$enable_yaml" != "xno"], [
 			           AC_MSG_ERROR([libyaml not found])])])
 ])
 AM_CONDITIONAL(HAVE_LIBYAML, test "x$have_libyaml" = xyes)
+
+AC_ARG_ENABLE([pcre2],
+	[AS_HELP_STRING([--disable-pcre2],
+		[disable pcre2 support])])
+
+AH_TEMPLATE([HAVE_PCRE2],
+	[Define this value if pcre2 is available.])
+AS_IF([test "x$enable_pcre2" != "xno"], [
+	PKG_CHECK_MODULES(PCRE2, libpcre2-8,
+			       [have_libpcre2_8=yes
+			       AC_DEFINE(HAVE_PCRE2)],
+			       [AS_IF([test "x$enable_pcre2" = "xyes"], [
+			           AC_MSG_ERROR([libpcre2-8 not found])])])
+])
+AM_CONDITIONAL(HAVE_PCRE2, test "x$have_libpcre2_8" = xyes)
+
+if test "${enable_static}" = "yes"; then
+	if test "${have_libpcre2_8}" = "yes"; then
+		if test "${host_mingw}" = "yes"; then
+			dnl -DPCRE2_STATIC needs to be added manually.
+			PCRE2_CFLAGS="$PCRE2_CFLAGS -DPCRE2_STATIC"
+		fi
+	fi
+fi
 
 
 # Checks for missing prototypes
@@ -781,24 +984,18 @@ fi
 # Output files
 # ------------
 
+AC_CHECK_LIB([m], [isnan])
+
 AC_CHECK_FUNCS(mblen)
 
-AC_CONFIG_FILES([Makefile gnulib/Makefile
-		 man/ctags.1.rst
-		 man/ctags-client-tools.7.rst
-		 man/ctags-incompatibilities.7.rst
-		 man/ctags-optlib.7.rst
-		 man/ctags-faq.7.rst
-		 man/ctags-lang-iPythonCell.7.rst
-		 man/ctags-lang-julia.7.rst
-		 man/ctags-lang-python.7.rst
-		 man/ctags-lang-verilog.7.rst
-		 man/ctags-lang-inko.7.rst
-		 man/ctags-lang-r.7.rst
-		 man/ctags-lang-sql.7.rst
-		 man/readtags.1.rst
-		 ])
+AC_CONFIG_FILES([Makefile gnulib/Makefile man/GNUmakefile])
 
 AC_OUTPUT
+
+AC_MSG_RESULT([
+##############################################################################
+Now you can run make or gmake. When you run as make, make sure it is GNU make.
+##############################################################################
+])
 
 # vim:ts=4:sw=4:

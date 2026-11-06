@@ -11,7 +11,7 @@
 *   INCLUDE FILES
 */
 #include "general.h"
-#include "cpreprocessor.h"
+#include "x-cpreprocessor.h"
 #include "field.h"
 #include "kind.h"
 #include "parse.h"
@@ -39,7 +39,8 @@ static tagRegexTable dtsTagRegexTable [] = {
 static void runCppGetc (void)
 {
 	cppInit (false, false, false, false,
-			 KIND_GHOST_INDEX, 0, KIND_GHOST_INDEX,
+			 KIND_GHOST_INDEX, 0, 0,
+			 KIND_GHOST_INDEX,
 			 KIND_GHOST_INDEX, 0, 0,
 			 FIELD_UNKNOWN);
 

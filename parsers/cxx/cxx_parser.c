@@ -19,7 +19,7 @@
 
 #include "parse.h"
 #include "vstring.h"
-#include "../cpreprocessor.h"
+#include "../x-cpreprocessor.h"
 #include "debug.h"
 #include "keyword.h"
 #include "read.h"
@@ -44,8 +44,9 @@ bool g_bFirstRun = true;
 // - Clear the token chain
 // - Reset "seen" keywords
 //
-void cxxParserNewStatement(void)
+void cxxParserNewStatementFull(bool bExported)
 {
+	CXX_DEBUG_PRINT("NEW STATE: %d", bExported);
 	cxxTokenChainClear(g_cxx.pTokenChain);
 	if(g_cxx.pTemplateTokenChain)
 	{
@@ -56,11 +57,23 @@ void cxxParserNewStatement(void)
 		// we don't care about stale specializations as they
 		// are destroyed wen the base template prefix is extracted
 	}
-	g_cxx.uKeywordState = 0;
+	// Fixed a memory leak by freeing the specializations here anyway.
+	// For certain invalid inputs, parseTemplateAngleBracketsToTemplateChain is never called.
+	if(g_cxx.pTemplateSpecializationTokenChain)
+	{
+		cxxTokenChainDestroy(g_cxx.pTemplateSpecializationTokenChain);
+		g_cxx.pTemplateSpecializationTokenChain = NULL;
+	}
+	g_cxx.uKeywordState = bExported? CXXParserKeywordStateSeenExport: 0;
 
 	// FIXME: this cpp handling of end/statement is kind of broken:
 	//        it works only because the moon is in the correct phase.
 	cppEndStatement();
+}
+
+void cxxParserNewStatement(void)
+{
+	cxxParserNewStatementFull(false);
 }
 
 //
@@ -423,11 +436,21 @@ void cxxParserSetEndLineForTagInCorkQueue(int iCorkQueueIndex,unsigned long lEnd
 {
 	CXX_DEBUG_ASSERT(iCorkQueueIndex > CORK_NIL,"The cork queue index is not valid");
 
-	tagEntryInfo * tag = getEntryInCorkQueue (iCorkQueueIndex);
+	tagEntryInfo *pTag = getEntryInCorkQueue (iCorkQueueIndex);
+	if (pTag)
+	{
+		/* When processing the input data in unget-buffer,
+		 * lineNumber > endLine can happen. */
+		if (pTag->lineNumber > lEndLine) {
+			CXX_DEBUG_PRINT ("Reset endline for \"%s\" starting from %ld (%ld => 0)",
+							 pTag->name,
+							 pTag->lineNumber,
+							 lEndLine);
+			lEndLine = 0;
 
-	CXX_DEBUG_ASSERT(tag,"No tag entry in the cork queue");
-
-	tag->extensionFields.endLine = lEndLine;
+		}
+	}
+	setTagEndLineToCorkEntry (iCorkQueueIndex, lEndLine);
 }
 
 //
@@ -436,7 +459,7 @@ void cxxParserSetEndLineForTagInCorkQueue(int iCorkQueueIndex,unsigned long lEnd
 //
 void cxxParserMarkEndLineForTagInCorkQueue(int iCorkQueueIndex)
 {
-	cxxParserSetEndLineForTagInCorkQueue(iCorkQueueIndex,getInputLineNumber());
+	cxxParserSetEndLineForTagInCorkQueue(iCorkQueueIndex, cppGetInputLineNumber());
 }
 
 
@@ -492,12 +515,15 @@ static bool cxxParserParseEnumStructClassOrUnionFullDeclarationTrailer(
 			szTypeName
 		);
 
-	MIOPos oFilePosition = getInputFilePosition();
-	int iFileLine = getInputLineNumber();
+	MIOPos oFilePosition = cppGetInputFilePosition();
+	int iFileLine = cppGetInputLineNumber();
+	int eMaybeTokenTypeOpeningBracket = (g_cxx.bConfirmedCPPLanguage
+										 ? 0
+										 : CXXTokenTypeOpeningBracket);
 
 	if(!cxxParserParseUpToOneOf(
 			CXXTokenTypeEOF | CXXTokenTypeSemicolon |
-				CXXTokenTypeOpeningBracket | CXXTokenTypeAssignment,
+				eMaybeTokenTypeOpeningBracket | CXXTokenTypeAssignment,
 			false
 		))
 	{
@@ -551,6 +577,25 @@ static bool cxxParserParseEnumStructClassOrUnionFullDeclarationTrailer(
 	if(cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeOpeningBracket))
 	{
 		CXX_DEBUG_PRINT("Found opening bracket: possibly a function declaration?");
+
+		// Revert keyword states.
+		// Here we assume the following kind of input:
+		//
+		//   static struct S {...} fn (...) { ... }
+		//
+		// To fill properties: field of fn with "static", g_cxx.uKeywordState
+		// must be set here.
+		//
+		// See cxxParserEmitFunctionTags.
+		//
+		// NOTE: C++ doesn't accept such kind of input. So we propagate
+		// the state only meaningful in C languages.
+		g_cxx.uKeywordState |= uKeywordState & (0
+			| CXXParserKeywordStateSeenStatic
+			| CXXParserKeywordStateSeenInline
+			| CXXParserKeywordStateSeenExtern
+			| CXXParserKeywordStateSeenAttributeDeprecated
+			);
 		if(!cxxParserParseBlockHandleOpeningBracket())
 		{
 			CXX_DEBUG_LEAVE_TEXT("Failed to handle the opening bracket");
@@ -575,7 +620,26 @@ static bool cxxParserParseEnumStructClassOrUnionFullDeclarationTrailer(
 	if(uKeywordState & CXXParserKeywordStateSeenTypedef)
 		cxxParserExtractTypedef(g_cxx.pTokenChain,true,false);
 	else
+	{
+		// Revert keyword states.
+		// Here we assume the following kind of input:
+		//
+		//   static struct S {...} s;
+		//
+		// To fill properties: field of s with "static", g_cxx.uKeywordState
+		// must be set here.
+		g_cxx.uKeywordState |= uKeywordState & (0
+			| CXXParserKeywordStateSeenStatic
+			| CXXParserKeywordStateSeenExtern
+			| CXXParserKeywordStateSeenMutable
+			| CXXParserKeywordStateSeenInline
+			| CXXParserKeywordStateSeenAttributeDeprecated
+			| CXXParserKeywordStateSeenConstexpr
+			| CXXParserKeywordStateSeenConstinit
+			| CXXParserKeywordStateSeenThreadLocal
+			);
 		cxxParserExtractVariableDeclarations(g_cxx.pTokenChain,0);
+	}
 
 	CXX_DEBUG_LEAVE();
 	return true;
@@ -661,8 +725,12 @@ bool cxxParserParseEnum(void)
 	{
 		if(uInitialKeywordState & CXXParserKeywordStateSeenTypedef)
 		{
+			bool bR;
+			g_cxx.uKeywordState &= ~CXXParserKeywordStateSeenTypedef;
 			CXX_DEBUG_LEAVE_TEXT("Found parenthesis after typedef: parsing as generic typedef");
-			return cxxParserParseGenericTypedef();
+			bR = cxxParserParseGenericTypedef();
+			cxxParserNewStatement();
+			return bR;
 		}
 		// probably a function declaration/prototype
 		// something like enum x func()....
@@ -673,7 +741,7 @@ bool cxxParserParseEnum(void)
 
 	// If we have found a semicolon then we might be in the special case of KnR function
 	// declaration. This requires at least 5 tokens and has some additional constraints.
-	// See cxxParserMaybeParseKnRStyleFunctionDefinition() for more informations.
+	// See cxxParserMaybeParseKnRStyleFunctionDefinition() for more information.
 	if(
 			// found semicolon
 			cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeSemicolon) &&
@@ -758,11 +826,30 @@ bool cxxParserParseEnum(void)
 			return false;
 		}
 
-		if(cxxTokenTypeIsOneOf(g_cxx.pToken,CXXTokenTypeEOF | CXXTokenTypeSemicolon))
+		if(cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeEOF))
 		{
 			// tolerate EOF, treat as forward declaration
 			cxxParserNewStatement();
-			CXX_DEBUG_LEAVE_TEXT("EOF or semicolon before enum block: can't decode this");
+			CXX_DEBUG_LEAVE_TEXT("EOF before enum block: can't decode this");
+			return true;
+		}
+
+		if(cxxTokenTypeIs(g_cxx.pToken,CXXTokenTypeSemicolon))
+		{
+			bool bMember = (cxxScopeGetVariableKind() == CXXTagKindMEMBER);
+			if (bMember)
+			{
+				// enum type structure member with bit-width:
+				// e.g.
+				//    struct { enum E m: 2; } v;
+				CXX_DEBUG_PRINT("Found semicolon, member definition with bit-width");
+				cxxParserExtractVariableDeclarations(g_cxx.pTokenChain, 0);
+			}
+			cxxParserNewStatement();
+			if (bMember)
+				CXX_DEBUG_LEAVE_TEXT("Semicolon before enum block: can't decode this");
+			else
+				CXX_DEBUG_LEAVE();
 			return true;
 		}
 
@@ -819,7 +906,7 @@ bool cxxParserParseEnum(void)
 		CXX_DEBUG_PRINT("Enum name is %s",vStringValue(pEnumName->pszWord));
 		cxxTokenChainTake(g_cxx.pTokenChain,pEnumName);
 	} else {
-		pEnumName = cxxTokenCreateAnonymousIdentifier(CXXTagKindENUM);
+		pEnumName = cxxTokenCreateAnonymousIdentifier(CXXTagKindENUM, NULL);
 		bAnonymous = true;
 		CXX_DEBUG_PRINT(
 				"Enum name is %s (anonymous)",
@@ -831,7 +918,9 @@ bool cxxParserParseEnum(void)
 	tagEntryInfo * tag = cxxTagBegin(CXXTagKindENUM,pEnumName);
 
 	int iCorkQueueIndex = CORK_NIL;
+	int iCorkQueueIndexFQ = CORK_NIL;
 
+	bool bEnumExported = false;
 	if(tag)
 	{
 		// FIXME: this is debatable
@@ -849,10 +938,24 @@ bool cxxParserParseEnum(void)
 			pTypeName = cxxTagCheckAndSetTypeField(pTypeBegin,pTypeEnd);
 		}
 
-		if(bIsScopedEnum)
-			pszProperties = cxxTagSetProperties(CXXTagPropertyScopedEnum);
 
-		iCorkQueueIndex = cxxTagCommit();
+		unsigned int uProperties = 0;
+		if(bIsScopedEnum)
+			uProperties |= CXXTagPropertyScopedEnum;
+		if(g_cxx.uKeywordState & CXXParserKeywordStateSeenExport)
+		{
+			uProperties |= CXXTagPropertyExport;
+			bEnumExported = true;
+		}
+		tag->isFileScope = (bEnumExported || cxxScopeIsExported())
+			? 0
+			: tag->isFileScope;
+
+		if(uProperties)
+			pszProperties = cxxTagSetProperties(uProperties);
+
+		iCorkQueueIndex = cxxTagCommit(&iCorkQueueIndexFQ);
+		cxxTagUseTokenAsPartOfDefTag(iCorkQueueIndex, pEnumName);
 
 		if (pszProperties)
 			vStringDelete (pszProperties);
@@ -861,7 +964,7 @@ bool cxxParserParseEnum(void)
 			cxxTokenDestroy(pTypeName);
 	}
 
-	cxxScopePush(pEnumName,CXXScopeTypeEnum,CXXScopeAccessPublic);
+	cxxScopePushExported(pEnumName,CXXScopeTypeEnum,CXXScopeAccessPublic, bEnumExported);
 	iPushedScopes++;
 
 	vString * pScopeName = cxxScopeGetFullNameAsString();
@@ -893,8 +996,11 @@ bool cxxParserParseEnum(void)
 			tag = cxxTagBegin(CXXTagKindENUMERATOR,pFirst);
 			if(tag)
 			{
-				tag->isFileScope = !isInputHeaderFile();
-				cxxTagCommit();
+				// If the enum is export'ed, we consider that its
+				// enumerators are not limited in a file scope.
+				tag->isFileScope = !isInputHeaderFile() && !cxxScopeIsExported();
+
+				cxxTagCommit(NULL);
 			}
 		}
 
@@ -906,7 +1012,11 @@ bool cxxParserParseEnum(void)
 	}
 
 	if(iCorkQueueIndex > CORK_NIL)
+	{
 		cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndex);
+		if(iCorkQueueIndexFQ > CORK_NIL)
+			cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndexFQ);
+	}
 
 	while(iPushedScopes > 0)
 	{
@@ -1024,7 +1134,10 @@ static bool cxxParserParseClassStructOrUnionInternal(
 		// }
 
 		if(g_cxx.pTemplateSpecializationTokenChain)
+		{
 			cxxTokenChainDestroy(g_cxx.pTemplateSpecializationTokenChain);
+			g_cxx.pTemplateSpecializationTokenChain = NULL;
+		}
 
 		g_cxx.pTemplateSpecializationTokenChain = cxxParserParseTemplateAngleBracketsToSeparateChain(false);
 		if(!g_cxx.pTemplateSpecializationTokenChain)
@@ -1042,8 +1155,12 @@ static bool cxxParserParseClassStructOrUnionInternal(
 	{
 		if(uInitialKeywordState & CXXParserKeywordStateSeenTypedef)
 		{
+			bool bR;
+			g_cxx.uKeywordState &= ~CXXParserKeywordStateSeenTypedef;
 			CXX_DEBUG_LEAVE_TEXT("Found parenthesis after typedef: parsing as generic typedef");
-			return cxxParserParseGenericTypedef();
+			bR = cxxParserParseGenericTypedef();
+			cxxParserNewStatement();
+			return bR;
 		}
 
 		// probably a function declaration/prototype
@@ -1055,7 +1172,7 @@ static bool cxxParserParseClassStructOrUnionInternal(
 
 	// If we have found a semicolon then we might be in the special case of KnR function
 	// declaration. This requires at least 5 tokens and has some additional constraints.
-	// See cxxParserMaybeParseKnRStyleFunctionDefinition() for more informations.
+	// See cxxParserMaybeParseKnRStyleFunctionDefinition() for more information.
 	// FIXME: This block is duplicated in enum
 	if(
 			// found semicolon
@@ -1211,7 +1328,7 @@ static bool cxxParserParseClassStructOrUnionInternal(
 			);
 		cxxTokenChainTake(g_cxx.pTokenChain,pClassName);
 	} else {
-		pClassName = cxxTokenCreateAnonymousIdentifier(uTagKind);
+		pClassName = cxxTokenCreateAnonymousIdentifier(uTagKind, NULL);
 		bAnonymous = true;
 		CXX_DEBUG_PRINT(
 				"Class/struct/union name is %s (anonymous)",
@@ -1261,10 +1378,12 @@ static bool cxxParserParseClassStructOrUnionInternal(
 	tagEntryInfo * tag = cxxTagBegin(uTagKind,pClassName);
 
 	int iCorkQueueIndex = CORK_NIL;
+	int iCorkQueueIndexFQ = CORK_NIL;
 
 	bool bGotTemplate = g_cxx.pTemplateTokenChain &&
 			(g_cxx.pTemplateTokenChain->iCount > 0) &&
 			cxxParserCurrentLanguageIsCPP();
+	bool bExported = uInitialKeywordState & CXXParserKeywordStateSeenExport;
 
 	if(tag)
 	{
@@ -1315,15 +1434,32 @@ static bool cxxParserParseClassStructOrUnionInternal(
 
 		tag->isFileScope = !isInputHeaderFile();
 
-		iCorkQueueIndex = cxxTagCommit();
+		unsigned int uProperties = 0;
+		if(bExported)
+			uProperties |= CXXTagPropertyExport;
+		// Overwrite the assigned value if the language object is export'ed
+		// directly or indirectly.
+		tag->isFileScope = (bExported || cxxScopeIsExported())
+			? 0
+			: tag->isFileScope;
 
+		vString * pszProperties = NULL;
+
+		if(uProperties)
+			pszProperties = cxxTagSetProperties(uProperties);
+
+		iCorkQueueIndex = cxxTagCommit(&iCorkQueueIndexFQ);
+		cxxTagUseTokenAsPartOfDefTag(iCorkQueueIndex, pClassName);
+
+		vStringDelete (pszProperties); /* NULL is acceptable. */
 	}
 
-	cxxScopePush(
+	cxxScopePushExported(
 			pClassName,
 			uScopeType,
 			(uTagKind == CXXTagCPPKindCLASS) ?
-				CXXScopeAccessPrivate : CXXScopeAccessPublic
+				CXXScopeAccessPrivate : CXXScopeAccessPublic,
+			bExported
 		);
 
 	if(
@@ -1343,7 +1479,11 @@ static bool cxxParserParseClassStructOrUnionInternal(
 	}
 
 	if(iCorkQueueIndex > CORK_NIL)
+	{
 		cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndex);
+		if(iCorkQueueIndexFQ > CORK_NIL)
+			cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndexFQ);
+	}
 
 	iPushedScopes++;
 	while(iPushedScopes > 0)
@@ -1455,7 +1595,8 @@ void cxxParserAnalyzeOtherStatement(void)
 
 	CXXToken * t = cxxTokenChainFirst(g_cxx.pTokenChain);
 
-	if(!cxxTokenTypeIsOneOf(t,CXXTokenTypeIdentifier | CXXTokenTypeKeyword))
+	if(!cxxTokenTypeIsOneOf(t,CXXTokenTypeIdentifier | CXXTokenTypeKeyword
+							| CXXTokenTypeMultipleColons))
 	{
 		CXX_DEBUG_LEAVE_TEXT("Statement does not start with an identifier or keyword");
 		return;
@@ -1492,7 +1633,14 @@ void cxxParserAnalyzeOtherStatement(void)
 	const bool bPrototypeParams = cxxTagKindEnabled(CXXTagKindPROTOTYPE) && cxxTagKindEnabled(CXXTagKindPARAMETER);
 check_function_signature:
 
-	if(cxxParserLookForFunctionSignature(g_cxx.pTokenChain,&oInfo,bPrototypeParams?&oParamInfo:NULL))
+	if(
+		cxxParserLookForFunctionSignature(g_cxx.pTokenChain,&oInfo,bPrototypeParams?&oParamInfo:NULL)
+		// Even if we saw "();", we cannot say it is a function prototype; a macro expansion can be used to
+		// initialize a top-level variable like:
+		//   #define INIT() 0
+		//   int i = INIT();"
+		&& ! (oInfo.pTypeEnd && cxxTokenTypeIs(oInfo.pTypeEnd,CXXTokenTypeAssignment))
+		)
 	{
 		CXX_DEBUG_PRINT("Found function prototype");
 
@@ -1505,12 +1653,14 @@ check_function_signature:
 			// out its proper scope. Better avoid emitting this one.
 			CXX_DEBUG_PRINT("But it has been preceded by the 'friend' keyword: this is not a real prototype");
 		} else {
-			int piCorkQueueIndex;
-			int iScopesPushed = cxxParserEmitFunctionTags(&oInfo,CXXTagKindPROTOTYPE,CXXEmitFunctionTagsPushScopes, &piCorkQueueIndex);
-			if (piCorkQueueIndex != CORK_NIL)
+			int iCorkQueueIndex, iCorkQueueIndexFQ;
+			int iScopesPushed = cxxParserEmitFunctionTags(&oInfo,CXXTagKindPROTOTYPE,CXXEmitFunctionTagsPushScopes,&iCorkQueueIndex,&iCorkQueueIndexFQ);
+			if (iCorkQueueIndex != CORK_NIL)
 			{
 				CXXToken * t = cxxTokenChainLast(g_cxx.pTokenChain);
-				cxxParserSetEndLineForTagInCorkQueue (piCorkQueueIndex, t->iLineNumber);
+				cxxParserSetEndLineForTagInCorkQueue (iCorkQueueIndex, t->iLineNumber);
+				if (iCorkQueueIndexFQ != CORK_NIL)
+					cxxParserSetEndLineForTagInCorkQueue (iCorkQueueIndexFQ, t->iLineNumber);
 			}
 
 			if(bPrototypeParams)
@@ -1848,6 +1998,7 @@ static rescanReason cxxParserMain(const unsigned int passCount)
 	int kind_for_header = CXXTagKindINCLUDE;
 	int kind_for_macro_param = CXXTagKindMACROPARAM;
 	int role_for_macro_undef = CR_MACRO_UNDEF;
+	int role_for_macro_condition = CR_MACRO_CONDITION;
 	int role_for_header_system = CR_HEADER_SYSTEM;
 	int role_for_header_local = CR_HEADER_LOCAL;
 
@@ -1860,6 +2011,7 @@ static rescanReason cxxParserMain(const unsigned int passCount)
 			false,
 			kind_for_define,
 			role_for_macro_undef,
+			role_for_macro_condition,
 			kind_for_macro_param,
 			kind_for_header,
 			role_for_header_system,
@@ -1870,6 +2022,8 @@ static rescanReason cxxParserMain(const unsigned int passCount)
 	g_cxx.iChar = ' ';
 
 	g_cxx.iNestingLevels = 0;
+
+	g_cxx.bInCXX11Attribute = false;
 
 	bool bRet = cxxParserParseBlock(false);
 
@@ -1931,6 +2085,7 @@ rescanReason cxxCppParserMain(const unsigned int passCount)
 	cxxKeywordEnablePublicProtectedPrivate(g_cxx.bConfirmedCPPLanguage);
 
 	rescanReason r = cxxParserMain(passCount);
+	cxxParserDestroyCurrentModuleToken();
 	CXX_DEBUG_LEAVE();
 	return r;
 }

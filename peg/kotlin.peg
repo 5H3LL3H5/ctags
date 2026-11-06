@@ -46,23 +46,23 @@ unparsable <- [^\n]+ NL* {reportFailure(auxil, $0s);}
 #script <- shebangLine? NL* fileAnnotation* _* packageHeader _* importList _* (statement _* semi)* EOF
 shebangLine <- ShebangLine _* NL+
 fileAnnotation <- (AT_NO_WS / AT_PRE_WS) FILE NL* COLON _* NL* (LSQUARE _* unescapedAnnotation+ _* RSQUARE / unescapedAnnotation) _* NL*
-packageHeader <- PACKAGE {pushKind(auxil, K_PACKAGE);} _ <identifier> {makeKotlinTag(auxil, $1, $1s, true);} _* semi?
+packageHeader <- PACKAGE {PUSH_KIND(auxil, K_PACKAGE);} _ <identifier> {makeKotlinTag(auxil, $1, $1s, true);} _* semi?
 importList <- importHeader+
 importHeader <- IMPORT _ identifier (DOT MULT / importAlias)? _* semi? _*
 importAlias <- _ AS _ simpleIdentifier
 topLevelObject <- declaration _* semis?
-typeAlias <- modifiers? _* TYPE_ALIAS {pushKind(auxil, K_TYPEALIAS);} (_ / NL)* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, false);} _* (__* typeParameters)? __* ASSIGNMENT __* type
+typeAlias <- modifiers? _* TYPE_ALIAS {PUSH_KIND(auxil, K_TYPEALIAS);} (_ / NL)* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, false);} _* (__* typeParameters)? __* ASSIGNMENT __* type
 declaration <- classDeclaration / objectDeclaration / functionDeclaration / propertyDeclaration / typeAlias
 
 # // SECTION: classes
-classDeclaration <- modifiers? (CLASS {pushKind(auxil, K_CLASS);} / (FUN __*)? INTERFACE {pushKind(auxil, K_INTERFACE);}) _ NL* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} (__* typeParameters)? (__* primaryConstructor)? (__* COLON __* delegationSpecifiers)? (__* typeConstraints)? (__* classBody / __* enumClassBody)? {popScope(auxil);}
+classDeclaration <- modifiers? (CLASS {PUSH_KIND(auxil, K_CLASS);} / (FUN __*)? INTERFACE {PUSH_KIND(auxil, K_INTERFACE);}) _ NL* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} (__* typeParameters)? (__* primaryConstructor)? (__* COLON __* delegationSpecifiers)? (__* typeConstraints)? (__* classBody / __* enumClassBody)? {POP_SCOPE(auxil);}
 primaryConstructor <- (modifiers? CONSTRUCTOR __*)? classParameters
 classBody <- LCURL __* classMemberDeclarations __* RCURL
 classParameters <- LPAREN __* (classParameter (__* COMMA __* classParameter)* (__* COMMA)?)? __* RPAREN
-classParameter <- (modifiers? _* VAL {pushKind(auxil, K_CONSTANT);} / modifiers? _* VAR {pushKind(auxil, K_VARIABLE);} / modifiers? {pushKind(auxil, K_IGNORE);} _*)? __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} _* COLON __* type (__* ASSIGNMENT __* expression)? {popScope(auxil);}
+classParameter <- (modifiers? _* VAL {PUSH_KIND(auxil, K_CONSTANT);} / modifiers? _* VAR {PUSH_KIND(auxil, K_VARIABLE);} / modifiers? {PUSH_KIND(auxil, K_IGNORE);} _*)? __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} _* COLON __* type (__* ASSIGNMENT __* expression)? {POP_SCOPE(auxil);}
 delegationSpecifiers <- annotatedDelegationSpecifier (__* COMMA __* annotatedDelegationSpecifier)*
-delegationSpecifier <- constructorInvocation / explicitDelegation / userType / functionType
-constructorInvocation <- userType _* valueArguments
+delegationSpecifier <- constructorInvocation / explicitDelegation / userType / SUSPEND __* functionType / functionType
+constructorInvocation <- userType __* valueArguments
 annotatedDelegationSpecifier <- annotation* __* delegationSpecifier
 explicitDelegation <- (userType / functionType) __* BY __* expression
 typeParameters <- LANGLE __* typeParameter (__* COMMA __* typeParameter)* (__* COMMA)? __* RANGLE
@@ -74,22 +74,23 @@ typeConstraint <- annotation* simpleIdentifier __* COLON __* type
 classMemberDeclarations <- (classMemberDeclaration semis?)*
 classMemberDeclaration <- secondaryConstructor / anonymousInitializer / companionObject / declaration
 anonymousInitializer <- INIT __* block
-companionObject <- modifiers? COMPANION __* OBJECT {pushKind(auxil, K_OBJECT);} <(__* simpleIdentifier)?> {makeKotlinTag(auxil, $1e-$1s != 0 ? $1 : "Companion", $1s, true);} (__* COLON __* delegationSpecifiers)? (__* classBody)? {popScope(auxil);}
+companionObject <- modifiers? COMPANION __* (DATA __*)? OBJECT {PUSH_KIND(auxil, K_OBJECT);} <(__* simpleIdentifier)?> {makeKotlinTag(auxil, $1e-$1s != 0 ? $1 : "Companion", $1s, true);} (__* COLON __* delegationSpecifiers)? (__* classBody)? {POP_SCOPE(auxil);}
 functionValueParameters <- LPAREN __* (functionValueParameter (__* COMMA __* functionValueParameter)* (__* COMMA)?)? __* RPAREN
 functionValueParameter <- parameterModifiers? _* parameter (__* ASSIGNMENT __* expression)?
-functionDeclaration <- modifiers? _* FUN {pushKind(auxil, K_METHOD);} _* (__* typeParameters)? _* (__* receiverTypeAndDot)? __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} __* functionValueParameters _* (__* COLON __* type)? _* (__* typeConstraints)? _* (__* functionBody)? {popScope(auxil);}
+functionDeclaration <- modifiers? _* FUN {PUSH_KIND(auxil, K_METHOD);} _* (__* typeParameters)? _* (__* receiverTypeAndDot)? __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} __* functionValueParameters _* (__* COLON __* type)? _* (__* typeConstraints)? _* (__* functionBody)? {POP_SCOPE(auxil);}
 functionBody <- block / ASSIGNMENT __* expression
 variableDeclaration <- annotation* __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, false);} (__* COLON __* type)?
 multiVariableDeclaration <- LPAREN __* variableDeclaration _* (__* COMMA __* variableDeclaration)* _* (__* COMMA)? __* RPAREN
-propertyDeclaration <- modifiers? _* (VAL {pushKind(auxil, K_CONSTANT);} / VAR {pushKind(auxil, K_VARIABLE);}) _ (__* typeParameters)? (__* receiverTypeAndDot)? (__* (multiVariableDeclaration / variableDeclaration)) (__* typeConstraints)? (__* (ASSIGNMENT __* expression / propertyDelegate))? (semi? _* setter (NL* semi? _* getter)? / semi? _* getter (NL* semi? _* setter)?)?
+propertyDeclaration <- modifiers? _* (VAL {PUSH_KIND(auxil, K_CONSTANT);} / VAR {PUSH_KIND(auxil, K_VARIABLE);}) _ (__* typeParameters)? (__* receiverTypeAndDot)? (__* (multiVariableDeclaration / variableDeclaration)) (__* typeConstraints)? (__* (ASSIGNMENT __* expression / propertyDelegate))? (semi? _* setter (NL* semi? _* getter)? / semi? _* getter (NL* semi? _* setter)?)?
 propertyDelegate <- BY __* expression
 # TODO: better handling of empty getters and setters?
 getter <- (modifiers _*)? GET __* LPAREN __* RPAREN (__* COLON __* type)? __* functionBody / (modifiers _*)? GET !(_* [^;\r\n])
 setter <- (modifiers _*)? SET __* LPAREN __* parameterWithOptionalType (__* COMMA)? __* RPAREN (__* COLON __* type)? __* functionBody / (modifiers _*)? SET !(_* [^;\r\n])
-parametersWithOptionalType <- LPAREN __* (parameterWithOptionalType (__* COMMA __* parameterWithOptionalType)* (__* COMMA)?)? __* RPAREN
-parameterWithOptionalType <- parameterModifiers? simpleIdentifier __* (COLON __* type)?
+parametersWithOptionalType <- LPAREN __* (functionValueParameterWithOptionalType (__* COMMA __* functionValueParameterWithOptionalType)* (__* COMMA)?)? __* RPAREN
+functionValueParameterWithOptionalType <- parameterModifiers? parameterWithOptionalType (__* ASSIGNMENT __* expression)?
+parameterWithOptionalType <- simpleIdentifier __* (COLON __* type)?
 parameter <- simpleIdentifier __* COLON __* type
-objectDeclaration <- modifiers? _* OBJECT {pushKind(auxil, K_OBJECT);} __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} (__* COLON __* delegationSpecifiers)? (__* classBody)? {popScope(auxil);}
+objectDeclaration <- modifiers? _* OBJECT {PUSH_KIND(auxil, K_OBJECT);} __* <simpleIdentifier> {makeKotlinTag(auxil, $1, $1s, true);} (__* COLON __* delegationSpecifiers)? (__* classBody)? {POP_SCOPE(auxil);}
 secondaryConstructor <- modifiers? CONSTRUCTOR __* functionValueParameters (__* COLON __* constructorDelegationCall)? __* block?
 constructorDelegationCall <- THIS __* valueArguments / SUPER __* valueArguments
 
@@ -99,7 +100,7 @@ enumEntries <- enumEntry (__* COMMA __* enumEntry)* __* COMMA?
 enumEntry <- (modifiers __*)? simpleIdentifier (__* valueArguments)? (__* classBody)?
 
 # // SECTION: types
-type <- typeModifiers? ( functionType / nullableType / parenthesizedType / typeReference)
+type <- typeModifiers? (functionType / parenthesizedType / definitelyNonNullableType / nullableType / typeReference)
 typeReference <- userType / DYNAMIC
 nullableType <- (typeReference / parenthesizedType) __* quest+
 quest <- !elvis (QUEST_WS / QUEST_NO_WS)
@@ -112,7 +113,8 @@ functionType <- (receiverType __* DOT __*)? functionTypeParameters __* ARROW __*
 functionTypeParameters <- LPAREN __* (parameter / type)? _* (__* COMMA __* (parameter / type))* _* (__* COMMA)? __* RPAREN
 parenthesizedType <- LPAREN __* type __* RPAREN
 receiverType <- (typeModifiers _*)? (nullableType / parenthesizedType / typeReference)
-# parenthesizedUserType <- LPAREN __* userType __* RPAREN / LPAREN __* parenthesizedUserType __* RPAREN
+parenthesizedUserType <- LPAREN __* userType __* RPAREN / LPAREN __* parenthesizedUserType __* RPAREN
+definitelyNonNullableType <- typeModifiers? (userType / parenthesizedUserType) __* AMP __* typeModifiers? (userType / parenthesizedUserType)
 receiverTypeAndDot <- (typeModifiers _*)? (nullableType __* DOT __* / parenthesizedType __* DOT __* / (simpleUserType __* DOT __*)+)
 
 # // SECTION: statements
@@ -141,7 +143,7 @@ infixOperation <- elvisExpression (_* inOperator __* elvisExpression / _* isOper
 elvisExpression <- infixFunctionCall (__* elvis __* infixFunctionCall)*
 elvis <- QUEST_NO_WS COLON
 infixFunctionCall <- rangeExpression (_* simpleIdentifier __* rangeExpression)*
-rangeExpression <- additiveExpression (_* RANGE __* additiveExpression)*
+rangeExpression <- additiveExpression (_* (RANGE_UNTIL / RANGE) __* additiveExpression)*
 additiveExpression <- multiplicativeExpression (_* additiveOperator __* multiplicativeExpression)*
 multiplicativeExpression <- asExpression (_* multiplicativeOperator __* asExpression)*
 asExpression <- prefixUnaryExpression (__* asOperator __* type)*
@@ -200,12 +202,12 @@ inside_valueArgument <- annotation? __* (simpleIdentifier __* ASSIGNMENT __*)? M
 #characterLiteral <- "'" (UniCharacterLiteral / EscapedIdentifier / [^\n\r'\\]) "'"
 #stringChar <- [^"]
 
-lambdaLiteral <- LCURL {pushKind(auxil, K_METHOD); makeKotlinTag(auxil, "<lambda>", $0s, true);} __* statements __* RCURL {popScope(auxil);} / LCURL {pushKind(auxil, K_METHOD); makeKotlinTag(auxil, "<lambda>", 8, true);} __* lambdaParameters? __* ARROW __* statements __* RCURL {popScope(auxil);}
+lambdaLiteral <- LCURL {PUSH_KIND(auxil, K_METHOD); makeKotlinTag(auxil, "<lambda>", $0s, true);} __* statements __* RCURL {POP_SCOPE(auxil);} / LCURL {PUSH_KIND(auxil, K_METHOD); makeKotlinTag(auxil, "<lambda>", 8, true);} __* lambdaParameters? __* ARROW __* statements __* RCURL {POP_SCOPE(auxil);}
 lambdaParameters <- lambdaParameter (__* COMMA __* lambdaParameter)* (__* COMMA)?
 lambdaParameter <- variableDeclaration / multiVariableDeclaration (__* COLON __* type)?
-anonymousFunction <- FUN {pushKind(auxil, K_METHOD); makeKotlinTag(auxil, "<anonymous>", $0s, true);} (__* type __* DOT)? __* parametersWithOptionalType (__* COLON __* type)? (__* typeConstraints)? (__* functionBody)? {popScope(auxil);}
+anonymousFunction <- (SUSPEND __*)? FUN {PUSH_KIND(auxil, K_METHOD); makeKotlinTag(auxil, "<anonymous>", $0s, true);} (__* type __* DOT)? __* parametersWithOptionalType (__* COLON __* type)? (__* typeConstraints)? (__* functionBody)? {POP_SCOPE(auxil);}
 functionLiteral <- lambdaLiteral / anonymousFunction
-objectLiteral <- OBJECT __* COLON __* delegationSpecifiers __* classBody / OBJECT __* classBody
+objectLiteral <- (DATA __*)? OBJECT __* COLON __* delegationSpecifiers __* classBody / OBJECT __* classBody
 thisExpression <- THIS_AT / THIS !(Letter / UnicodeDigit)
 superExpression <- SUPER_AT / SUPER (LANGLE __* type __* RANGLE)? (AT_NO_WS simpleIdentifier)?
 ifExpression <- IF __* LPAREN __* expression __* RPAREN __* controlStructureBody? __* SEMICOLON? __* ELSE __* (controlStructureBody / SEMICOLON) / IF __* LPAREN __* expression __* RPAREN __* (controlStructureBody / SEMICOLON)
@@ -240,7 +242,7 @@ parameterModifiers <- (annotation / parameterModifier)+
 modifier <- (classModifier / memberModifier / visibilityModifier / functionModifier / propertyModifier / inheritanceModifier / parameterModifier / platformModifier) __*
 typeModifiers <- typeModifier+
 typeModifier <- annotation / SUSPEND __*
-classModifier <- ENUM / SEALED / ANNOTATION / DATA / INNER
+classModifier <- ENUM / SEALED / ANNOTATION / DATA / INNER / VALUE
 memberModifier <- OVERRIDE / LATEINIT
 visibilityModifier <- PUBLIC / PRIVATE / INTERNAL / PROTECTED
 varianceModifier <- IN / OUT
@@ -258,10 +260,10 @@ annotation <- (singleAnnotation / multiAnnotation) __*
 singleAnnotation <- annotationUseSiteTarget __* unescapedAnnotation / (AT_NO_WS / AT_PRE_WS) unescapedAnnotation
 multiAnnotation <- annotationUseSiteTarget __* LSQUARE unescapedAnnotation+ RSQUARE / (AT_NO_WS / AT_PRE_WS) LSQUARE unescapedAnnotation+ RSQUARE
 annotationUseSiteTarget <- (AT_NO_WS / AT_PRE_WS) (FIELD / PROPERTY / GET / SET / RECEIVER / PARAM / SETPARAM / DELEGATE) __* COLON
-unescapedAnnotation <- constructorInvocation / userType
+unescapedAnnotation <- userType valueArguments?
 
 # // SECTION: identifiers
-simpleIdentifier <- !(hardKeyword !(Letter / '_' / UnicodeDigit)) Identifier / ABSTRACT / ANNOTATION / BY / CATCH / COMPANION / CONSTRUCTOR / CROSSINLINE / DATA / DYNAMIC / ENUM / EXTERNAL / FINAL / FINALLY / GET / IMPORT / INFIX / INIT / INLINE / INNER / INTERNAL / LATEINIT / NOINLINE / OPEN / OPERATOR / OUT / OVERRIDE / PRIVATE / PROTECTED / PUBLIC / REIFIED / SEALED / TAILREC / SET / VARARG / WHERE / FIELD / PROPERTY / RECEIVER / PARAM / SETPARAM / DELEGATE / FILE / EXPECT / ACTUAL / CONST / SUSPEND
+simpleIdentifier <- !(hardKeyword !(Letter / '_' / UnicodeDigit)) Identifier / ABSTRACT / ANNOTATION / BY / CATCH / COMPANION / CONSTRUCTOR / CROSSINLINE / DATA / DYNAMIC / ENUM / EXTERNAL / FINAL / FINALLY / GET / IMPORT / INFIX / INIT / INLINE / INNER / INTERNAL / LATEINIT / NOINLINE / OPEN / OPERATOR / OUT / OVERRIDE / PRIVATE / PROTECTED / PUBLIC / REIFIED / SEALED / TAILREC / SET / VARARG / WHERE / FIELD / PROPERTY / RECEIVER / PARAM / SETPARAM / DELEGATE / FILE / EXPECT / ACTUAL / CONST / SUSPEND / VALUE
 identifier <- simpleIdentifier (__* DOT simpleIdentifier)*
 
 hardKeyword <- AS / BREAK / CLASS / CONTINUE / DO / ELSE / FOR / FUN / IF / IN / INTERFACE / IS / NullLiteral / OBJECT / PACKAGE / RETURN / SUPER / THIS / THROW / TRY / TYPE_ALIAS / TYPEOF / VAL / VAR / WHEN / WHILE / BooleanLiteral
@@ -314,6 +316,7 @@ MOD_ASSIGNMENT <- '%='
 ARROW <- '->'
 #DOUBLE_ARROW <- '=>'
 RANGE <- '..'
+RANGE_UNTIL <- '..<'
 COLONCOLON <- '::'
 #DOUBLE_SEMICOLON <- ';;'
 #HASH <- '#'
@@ -333,6 +336,7 @@ AS_SAFE <- 'as?'
 EQEQ <- '=='
 EQEQEQ <- '==='
 #SINGLE_QUOTE <- '\''
+AMP <- '&'
 
 # // SECTION: keywords
 RETURN_AT <- 'return@' Identifier
@@ -397,6 +401,7 @@ SEALED <- 'sealed' !(Letter / UnicodeDigit)
 ANNOTATION <- 'annotation' !(Letter / UnicodeDigit)
 DATA <- 'data' !(Letter / UnicodeDigit)
 INNER <- 'inner' !(Letter / UnicodeDigit)
+VALUE <- 'value' !(Letter / UnicodeDigit)
 TAILREC <- 'tailrec' !(Letter / UnicodeDigit)
 OPERATOR <- 'operator' !(Letter / UnicodeDigit)
 INLINE <- 'inline' !(Letter / UnicodeDigit)

@@ -13,3 +13,19 @@ mark type1
 { add } type1
 
 (xyz) cvn ==
+
+(abc) 0 string cvs ==
+/efg 0 string cvs ==
+true 0 string cvs ==
+false 0 string cvs ==
+99 0 string cvs ==
+-309 0 string cvs ==
+null 0 string cvs ==
+[ ] 0 string cvs ==
+<< >> 0 string cvs ==
+{ } 0 string cvs ==
+
+1 cvx 2 cvx [ /add cvx ] cvx exec ==
+
+{ /abc dup cvx pstack eq == } exec
+{ [  ] dup cvx pstack eq == } exec

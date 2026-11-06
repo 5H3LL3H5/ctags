@@ -3,7 +3,7 @@
 *   GNU General Public License version 2 or (at your option) any later version.
 *
 *   Reference:
-*     https://golang.org/ref/spec
+*     https://go.dev/ref/spec
 */
 
 
@@ -146,7 +146,7 @@ static kindDefinition GoKinds[] = {
 	{true, 'm', "member", "struct members"},
 	{true, 'M', "anonMember", "struct anonymous members"},
 	{true, 'n', "methodSpec", "interface method specification"},
-	{true, 'u', "unknown", "unknown",
+	{true, 'Y', "unknown", "unknown",
 	 .referenceOnly = true, ATTACH_ROLES (GoUnknownRoles)},
 	{true, 'P', "packageName", "name for specifying imported package"},
 	{true, 'a', "talias", "type aliases"},
@@ -170,6 +170,7 @@ typedef enum {
 	F_PACKAGE,
 	F_PACKAGE_NAME,
 	F_HOW_IMPORTED,
+	F_RECEIVER,
 } goField;
 
 static fieldDefinition GoFields [] = {
@@ -188,6 +189,12 @@ static fieldDefinition GoFields [] = {
 		.description = "how the package is imported (\"inline\" for `.' or \"init\" for `_')",
 		.enabled = false,
 	},
+	{
+		.name = "receiver",
+		.description = "the name of the receiver",
+		.enabled = false,
+		.version = 1,
+	}
 };
 
 
@@ -281,9 +288,22 @@ static void parseIdentifier (vString *const string, const int firstChar)
 	ungetcToInputFile (c);		/* always unget, LF might add a semicolon */
 }
 
-static bool collectorIsEmpty(collector *collector)
+static bool collectorIsEmpty(const collector *collector)
 {
 	return !vStringLength(collector->str);
+}
+
+static bool collectorCanAppend (const collector *collector,
+								size_t n_to_append)
+{
+	size_t current_len = vStringLength (collector->str);
+	if (current_len >= MAX_COLLECTOR_LENGTH)
+		return false;
+	if (n_to_append == 0)
+		return true;
+	if (n_to_append > MAX_COLLECTOR_LENGTH)
+		return false;
+	return n_to_append <= MAX_COLLECTOR_LENGTH - current_len;
 }
 
 static void collectorPut (collector *collector, char c)
@@ -293,26 +313,40 @@ static void collectorPut (collector *collector, char c)
 				  "...") == 0
 		&& c == ' ')
 		return;
-	else if (vStringLength(collector->str) > 0)
+
+	if (vStringLength(collector->str) > 0)
 	{
 		if (vStringLast(collector->str) == '(' && c == ' ')
 			return;
-		else if (vStringLast(collector->str) == ' ' && c == ')')
+		if (vStringLast(collector->str) == ' ' && c == ')')
 			vStringChop(collector->str);
 	}
+
+	if (!collectorCanAppend (collector, 1))
+		return;
 
 	collector->last_len = vStringLength (collector->str);
 	vStringPut (collector->str, c);
 }
 
-static void collectorCatS (collector *collector, char *cstr)
+static void collectorCatS (collector *collector, const char *cstr)
 {
+	size_t cstr_len = strlen (cstr);
+	if (cstr_len == 0)
+		return;
+
+	if (!collectorCanAppend (collector, cstr_len))
+		return;
+
 	collector->last_len = vStringLength (collector->str);
-	vStringCatS (collector->str, cstr);
+	vStringNCatSUnsafe (collector->str, cstr, cstr_len);
 }
 
-static void collectorCat (collector *collector, vString *str)
+static void collectorCat (collector *collector, const vString *str)
 {
+	if (!collectorCanAppend (collector, vStringLength (str)))
+		return;
+
 	collector->last_len = vStringLength (collector->str);
 	vStringCat (collector->str, str);
 }
@@ -325,6 +359,9 @@ static void collectorAppendToken (collector *collector, const tokenInfo *const t
 	{
 		// only struct member annotations can appear in function prototypes
 		// so only `` type strings are possible
+		if (!collectorCanAppend (collector,
+								 vStringLength (token->string) + 2))
+			return;
 		collector->last_len = vStringLength (collector->str);
 		vStringPut(collector->str, '`');
 		vStringCat(collector->str, token->string);
@@ -351,6 +388,15 @@ static void collectorTruncate (collector *collector, bool dropLast)
 	vStringStripLeading (collector->str);
 	vStringStripTrailing (collector->str);
 }
+
+static void collectorReset (collector *collector)
+{
+	if (collector->str)
+		vStringClear (collector->str);
+	collector->last_len = 0;
+}
+
+#define COLLECTOR(VSTR) { .str = VSTR, .last_len = 0, }
 
 static void readTokenFull (tokenInfo *const token, collector *collector)
 {
@@ -380,7 +426,7 @@ getNextChar:
 			c = ';';  // semicolon injection
 		}
 		whitespace = c == '\t'  ||  c == ' ' ||  c == '\r' || c == '\n';
-		if (collector && whitespace && firstWhitespace && vStringLength (collector->str) < MAX_COLLECTOR_LENGTH)
+		if (collector && whitespace && firstWhitespace)
 		{
 			firstWhitespace = false;
 			collectorPut (collector, ' ');
@@ -543,7 +589,7 @@ getNextChar:
 
 	token->c = c;
 
-	if (collector && vStringLength (collector->str) < MAX_COLLECTOR_LENGTH)
+	if (collector)
 		collectorAppendToken (collector, token);
 
 	lastTokenType = token->type;
@@ -693,8 +739,7 @@ static int makeTagFull (tokenInfo *const token, const goKind kind,
 
 	initRefTagEntry (&e, name, kind, role);
 
-	e.lineNumber = token->lineNumber;
-	e.filePosition = token->filePosition;
+	updateTagLine (&e, token->lineNumber, token->filePosition);
 	if (argList)
 		e.extensionFields.signature = argList;
 	if (typeref)
@@ -805,7 +850,7 @@ static void parseFunctionOrMethod (tokenInfo *const token, const int scope)
 
 		// Start recording signature
 		vString *buffer = vStringNew ();
-		collector collector = { .str = buffer, .last_len = 0, };
+		collector collector = COLLECTOR (buffer);
 
 		// Skip over parameters.
 		readTokenFull (token, &collector);
@@ -814,7 +859,7 @@ static void parseFunctionOrMethod (tokenInfo *const token, const int scope)
 		collectorTruncate (&collector, false);
 		if (receiver_type_token)
 		{
-			func_scope = anyEntryInScope (scope, vStringValue (receiver_type_token->string));
+			func_scope = anyEntryInScope (scope, vStringValue (receiver_type_token->string), false);
 			if (func_scope == CORK_NIL)
 				func_scope = makeTagFull(receiver_type_token, GOTAG_UNKNOWN,
 										 scope, NULL, NULL,
@@ -829,13 +874,15 @@ static void parseFunctionOrMethod (tokenInfo *const token, const int scope)
 		{
 			tagEntryInfo *receiver = getEntryInCorkQueue (receiver_cork);
 			if (receiver)
+			{
 				receiver->extensionFields.scopeIndex = cork;
+				attachParserField (e, GoFields [F_RECEIVER].ftype, receiver->name);
+			}
 		}
 
 		deleteToken (functionToken);
 
-		vStringClear (collector.str);
-		collector.last_len = 0;
+		collectorReset (&collector);
 
 		readTokenFull (token, &collector);
 
@@ -862,7 +909,7 @@ static void parseFunctionOrMethod (tokenInfo *const token, const int scope)
 		{
 			skipToMatched (token, NULL);
 			if (e)
-				e->extensionFields.endLine = getInputLineNumber ();
+				setTagEndLine (e, getInputLineNumber());
 		}
 	}
 
@@ -872,7 +919,7 @@ static void parseFunctionOrMethod (tokenInfo *const token, const int scope)
 
 static void attachTypeRefField (int scope, intArray *corks, const char *const type)
 {
-	int type_cork = anyEntryInScope (scope, type);
+	int type_cork = anyEntryInScope (scope, type, false);
 	tagEntryInfo *type_e = getEntryInCorkQueue (type_cork);
 
 	for (unsigned int i = 0; i < intArrayCount (corks); i++)
@@ -896,7 +943,7 @@ static void parseInterfaceMethods (tokenInfo *const token, const int scope)
 	// InterfaceTypeName  = TypeName .
 
 	vString *inheritsBuf = vStringNew ();
-	collector inherits = { .str = inheritsBuf, .last_len = 0, };
+	collector inherits = COLLECTOR (inheritsBuf);
 
 	readToken (token);
 	if (!isType (token, TOKEN_OPEN_CURLY))
@@ -938,9 +985,9 @@ static void parseInterfaceMethods (tokenInfo *const token, const int scope)
 				// => Signature
 				// Signature      = Parameters [ Result ] .
 				vString *pbuf = vStringNew ();
-				collector pcol = { .str = pbuf, .last_len = 0, };
+				collector pcol = COLLECTOR (pbuf);
 				vString *rbuf = NULL;
-				collector rcol = { .str = NULL, .last_len = 0, };
+				collector rcol = COLLECTOR (NULL);
 
 				// Parameters
 				collectorPut (&pcol, '(');
@@ -1091,7 +1138,7 @@ static void parseStructMembers (tokenInfo *const token, const int scope)
 		else
 		{
 			vString *typeForMember = vStringNew ();
-			collector collector = { .str = typeForMember, .last_len = 0, };
+			collector collector = COLLECTOR (typeForMember);
 
 			collectorAppendToken (&collector, token);
 			skipType (token, &collector);
@@ -1208,7 +1255,7 @@ static void parseConstTypeVar (tokenInfo *const token, goKind kind, const int sc
 			{
 				/* Filling "typeref:" field of typeToken. */
 				vString *buffer = vStringNew ();
-				collector collector = { .str = buffer, .last_len = 0, };
+				collector collector = COLLECTOR(buffer);
 
 				collectorAppendToken (&collector, token);
 				skipType (token, &collector);
@@ -1231,7 +1278,7 @@ static void parseConstTypeVar (tokenInfo *const token, goKind kind, const int sc
 		else if (corks)
 		{
 			vString *buffer = vStringNew ();
-			collector collector = { .str = buffer, .last_len = 0, };
+			collector collector = COLLECTOR (buffer);
 
 			collectorAppendToken (&collector, token);
 			skipType (token, &collector);
@@ -1256,7 +1303,7 @@ static void parseConstTypeVar (tokenInfo *const token, goKind kind, const int sc
 		{
 			tagEntryInfo *e = getEntryInCorkQueue (member_scope);
 			if (e)
-				e->extensionFields.endLine = getInputLineNumber ();
+				setTagEndLine(e, getInputLineNumber ());
 		}
 
 		if (usesParens && !isType (token, TOKEN_CLOSE_PAREN))
@@ -1412,5 +1459,7 @@ extern parserDefinition *GoParser (void)
 	def->fieldCount = ARRAY_SIZE (GoFields);
 	def->useCork = CORK_QUEUE | CORK_SYMTAB;
 	def->requestAutomaticFQTag = true;
+	def->versionCurrent = 1;
+	def->versionAge = 1;
 	return def;
 }

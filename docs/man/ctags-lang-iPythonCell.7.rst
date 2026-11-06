@@ -6,26 +6,26 @@ ctags-lang-iPythonCell
 
 The man page of the iPythonCell parser for Universal Ctags
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 7
 
 SYNOPSIS
 --------
-|	**ctags** ... --extras={subparser} --languages=+iPythonCell,Python \\
+|	**ctags** ... --extras=+{subparser} --languages=+iPythonCell,Python \\
 |                     [--extras-IPythonCell=+{doubleSharps}] \\
 |                     [--regex-IPythonCell=/<PATTERN>/\\n/c/] ...
 
 DESCRIPTION
 -----------
-iPythonCell is a subparser stacked on top of the Python parser.
+iPythonCell parser is a subparser stacked on top of the Python parser.
 It works when:
 
-* The Python parser is enabled,
+* the Python parser is enabled,
 * the ``subparser`` extra is enabled, and
 * the iPythonCell parser itself is enabled.
 
-iPythonCell extracts cells explained as in vim-ipython-cell
+The iPythonCell parser extracts cells explained as in vim-ipython-cell
 (https://github.com/hanschen/vim-ipython-cell/blob/master/README.md).
 
 KIND(S)
@@ -35,11 +35,11 @@ The iPythonCell parser defines only a ``cell`` kind.
 EXTRA(S)
 --------
 
-Tagging cells staring with ``##...`` is disabled by default because
+Tagging cells starting with ``##...`` is disabled by default because
 the pattern is too generic; with that pattern unwanted tags can be extracted.
 
 Enable ``doubleSharps`` language specific extra for tagging cells
-staring with ``##...``.
+starting with ``##...``.
 
 CUSTOMIZING
 -----------

@@ -18,21 +18,9 @@
  *
  */
 
-#ifndef READTAGS_DSL
 #include "general.h"  /* must always come first */
-
 #include "routines.h"
 #include "debug.h"
-#else
-
-#if defined (HAVE_CONFIG_H)
-#include <config.h>
-#endif
-
-#ifdef HAVE_STDBOOL_H
-#include <stdbool.h>
-#endif
-#endif	/* READTAGS_DSL */
 
 #include "mio.h"
 
@@ -47,50 +35,6 @@
 #define MAY_HAVE_FTRUNCATE
 #include <unistd.h>
 #endif
-
-#ifdef READTAGS_DSL
-#define xMalloc(n,Type)    (Type *)eMalloc((size_t)(n) * sizeof (Type))
-#define xRealloc(p,n,Type) (Type *)eRealloc((p), (n) * sizeof (Type))
-
-static void *eMalloc (const size_t size)
-{
-	void *buffer = malloc (size);
-
-	if (buffer == NULL)
-	{
-		fprintf(stderr, "out of memory");
-		abort ();
-	}
-
-	return buffer;
-}
-
-static void *eRealloc (void *const ptr, const size_t size)
-{
-	void *buffer;
-	if (ptr == NULL)
-		buffer = eMalloc (size);
-	else
-	{
-		buffer = realloc (ptr, size);
-		if (buffer == NULL)
-		{
-			fprintf(stderr, "out of memory");
-			abort ();
-		}
-	}
-	return buffer;
-}
-
-static void eFree (void *const ptr)
-{
-	free (ptr);
-}
-#define eFreeNoNullCheck eFree
-
-#  define Assert(c) do {} while(0)
-#  define AssertNotReached() do {} while(0)
-#endif	/* READTAGS_DSL */
 
 /* minimal reallocation chunk size */
 #define MIO_CHUNK_SIZE 4096
@@ -1250,7 +1194,7 @@ void mio_rewind (MIO *mio)
  * @mio: A #MIO stream
  * @pos: (out): A #MIOPos object to fill-in
  *
- * Stores the current position (and maybe other informations about the stream
+ * Stores the current position (and maybe other information about the stream
  * state) of a #MIO stream in order to restore it later with mio_setpos(). This
  * function behaves the same as fgetpos().
  *
@@ -1260,6 +1204,8 @@ void mio_rewind (MIO *mio)
 int mio_getpos (MIO *mio, MIOPos *pos)
 {
 	int rv = -1;
+
+	memset (pos, 0, sizeof (*pos));
 
 	pos->type = mio->type;
 	if (mio->type == MIO_TYPE_FILE)
@@ -1316,11 +1262,11 @@ int mio_setpos (MIO *mio, MIOPos *pos)
 #ifdef MIO_DEBUG
 	if (pos->tag != mio)
 	{
-		g_critical ("mio_setpos((MIO*)%p, (MIOPos*)%p): "
+		error (FATAL, "mio_setpos((MIO*)%p, (MIOPos*)%p, (MIOPos->tag): %p: "
 					"Given MIOPos was not set by a previous call to mio_getpos() "
 					"on the same MIO object, which means there is a bug in "
 					"someone's code.",
-					(void *)mio, (void *)pos);
+					(void *)mio, (void *)pos, (void *)pos->tag);
 		errno = EINVAL;
 		return -1;
 	}

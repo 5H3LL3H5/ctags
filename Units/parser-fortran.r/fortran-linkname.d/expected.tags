@@ -1,0 +1,33 @@
+my_mod	input.f	/^      module my_mod$/;"	m	line:1	end:36
+__anon9b9a88660103	input.f	/^        enumerator :: my_constr = 1, my_second_constr = 4$/;"	E	line:4	module:my_mod	extras:anonymous	end:5
+my_constr	input.f	/^        enumerator :: my_constr /;"	N	line:4	enum:__anon9b9a88660103
+my_second_constr	input.f	/^        enumerator :: my_constr = 1, my_second_constr /;"	N	line:4	enum:__anon9b9a88660103
+my_type	input.f	/^      type my_type$/;"	t	line:7	module:my_mod	end:13
+a	input.f	/^        integer a$/;"	k	line:8	type:my_type
+b	input.f	/^        integer b$/;"	k	line:9	type:my_type
+c	input.f	/^        integer c$/;"	k	line:10	type:my_type
+my_proc	input.f	/^        procedure :: my_proc /;"	M	line:12	type:my_type
+my_sequence_type	input.f	/^      type my_sequence_type$/;"	t	line:15	module:my_mod	end:19
+a	input.f	/^        integer a$/;"	k	line:17	type:my_sequence_type
+b	input.f	/^        integer b$/;"	k	line:18	type:my_sequence_type
+my_mod_type	input.f	/^      type(my_sequence_type) :: my_mod_type$/;"	v	line:21	module:my_mod
+my_mod_common	input.f	23;"	c	line:23	module:my_mod
+my_mod_common_	input.f	23;"	c	line:23	module:my_mod	extras:linkName
+my_func	input.f	/^      function my_func(/;"	f	line:27	module:my_mod	end:33
+my_func_	input.f	/^      function my_func(x)$/;"	f	line:27	module:my_mod	extras:linkName	end:33
+my_block	input.f	/^      block data my_block$/;"	b	line:38	end:42
+my_block_	input.f	/^      block data my_block$/;"	b	line:38	extras:linkName	end:42
+my_var	input.f	/^        integer my_var$/;"	v	line:39	blockData:my_block
+my_common	input.f	40;"	c	line:40	blockData:my_block
+my_common_	input.f	40;"	c	line:40	blockData:my_block	extras:linkName
+my_subr	input.f	/^      subroutine my_subr$/;"	s	line:44	end:51
+my_subr_	input.f	/^      subroutine my_subr$/;"	s	line:44	extras:linkName	end:51
+my_entry	input.f	/^        entry my_entry$/;"	e	line:49	subroutine:my_subr
+my_entry_	input.f	/^        entry my_entry$/;"	e	line:49	subroutine:my_subr	extras:linkName
+my_main	input.f	/^      program my_main$/;"	p	line:54	end:67
+my_interface	input.f	/^        interface my_interface$/;"	i	line:56	program:my_main	end:59
+my_var	input.f	/^        integer my_var$/;"	v	line:61	program:my_main
+my_namelist	input.f	/^        namelist \/my_namelist\//;"	n	line:62	program:my_main
+my_conc_type	input.f	/^        type(my_type) :: my_conc_type$/;"	v	line:63	program:my_main
+my_common	input.f	64;"	c	line:64	program:my_main
+my_common_	input.f	64;"	c	line:64	program:my_main	extras:linkName

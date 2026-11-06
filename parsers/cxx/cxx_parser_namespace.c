@@ -17,13 +17,13 @@
 
 #include "parse.h"
 #include "vstring.h"
-#include "../cpreprocessor.h"
+#include "../x-cpreprocessor.h"
 #include "debug.h"
 #include "keyword.h"
 #include "read.h"
 
 
-#define MAX_NESTED_NAMESPACES 8
+#define MAX_NESTED_NAMESPACES 16
 
 
 bool cxxParserParseNamespace(void)
@@ -51,11 +51,14 @@ bool cxxParserParseNamespace(void)
 	// namespace;
 
 	unsigned int uProperties = 0;
+	bool bExported = g_cxx.uKeywordState & CXXParserKeywordStateSeenExport;
 
 	if(cxxTagFieldEnabled(CXXTagFieldProperties))
 	{
 		if(g_cxx.uKeywordState & CXXParserKeywordStateSeenInline)
 			uProperties |= CXXTagPropertyInline;
+		if(bExported)
+			uProperties |= CXXTagPropertyExport;
 	}
 
 	cxxParserNewStatement(); // always a new statement
@@ -65,10 +68,12 @@ bool cxxParserParseNamespace(void)
 
 	int i;
 
-	int aCorkQueueIndices[MAX_NESTED_NAMESPACES];
-
+	struct { int leafnm, fqnm; } aCorkQueueIndices[MAX_NESTED_NAMESPACES];
 	for(i=0;i<MAX_NESTED_NAMESPACES;i++)
-		aCorkQueueIndices[i] = CORK_NIL;
+	{
+		aCorkQueueIndices[i].leafnm = CORK_NIL;
+		aCorkQueueIndices[i].fqnm   = CORK_NIL;
+	}
 
 	if(!cxxParserParseNextToken())
 	{
@@ -132,7 +137,11 @@ bool cxxParserParseNamespace(void)
 				if(tag)
 				{
 					// This is highly questionable but well.. it's how old ctags did, so we do.
-					tag->isFileScope = !isInputHeaderFile();
+					tag->isFileScope = !isInputHeaderFile() && !bExported && !cxxScopeIsExported();
+
+					vString * pszProperties = NULL;
+					if(uProperties)
+						pszProperties = cxxTagSetProperties(uProperties);
 
 					CXXToken * pAliasedName = cxxTokenChainExtractRange(
 							pFirstIdentifier,
@@ -146,8 +155,9 @@ bool cxxParserParseNamespace(void)
 							false
 						);
 
-					cxxTagCommit();
+					cxxTagCommit(NULL);
 
+					vStringDelete (pszProperties); /* NULL is acceptable.  */
 					cxxTokenDestroy(pAliasedName);
 				}
 
@@ -240,14 +250,17 @@ bool cxxParserParseNamespace(void)
 			if(tag)
 			{
 				// This is highly questionable but well.. it's how old ctags did, so we do.
-				tag->isFileScope = !isInputHeaderFile();
+				tag->isFileScope = !isInputHeaderFile() && !bExported && !cxxScopeIsExported();
 
 				vString * pszProperties = uProperties ? cxxTagSetProperties(uProperties) : NULL;
 
-				int iCorkQueueIndex = cxxTagCommit();
-
+				int iCorkQueueIndexFQ;
+				int iCorkQueueIndex = cxxTagCommit(&iCorkQueueIndexFQ);
 				if(iScopeCount < MAX_NESTED_NAMESPACES)
-					aCorkQueueIndices[iScopeCount] = iCorkQueueIndex;
+				{
+					aCorkQueueIndices[iScopeCount].leafnm = iCorkQueueIndex;
+					aCorkQueueIndices[iScopeCount].fqnm   = iCorkQueueIndexFQ;
+				}
 
 				if(pszProperties)
 					vStringDelete(pszProperties);
@@ -257,10 +270,11 @@ bool cxxParserParseNamespace(void)
 
 			cxxTokenChainTake(g_cxx.pTokenChain,t);
 
-			cxxScopePush(
+			cxxScopePushExported(
 					t,
 					CXXScopeTypeNamespace,
-					CXXScopeAccessUnknown
+					CXXScopeAccessUnknown,
+					bExported
 				);
 
 			iScopeCount++;
@@ -273,17 +287,21 @@ bool cxxParserParseNamespace(void)
 		// anonymous namespace
 		CXX_DEBUG_PRINT("Found anonymous namespace start");
 
-		CXXToken * t = cxxTokenCreateAnonymousIdentifier(CXXTagCPPKindNAMESPACE);
+		CXXToken * t = cxxTokenCreateAnonymousIdentifier(CXXTagCPPKindNAMESPACE, NULL);
 		tagEntryInfo * tag = cxxTagBegin(CXXTagCPPKindNAMESPACE,t);
 		if(tag)
 		{
 			tag->isFileScope = !isInputHeaderFile();
+			// We don't have to consider "export" keyword here because an object having
+			// no name is not exportable.
 
 			markTagExtraBit (tag, XTAG_ANONYMOUS);
 
 			vString * pszProperties = uProperties ? cxxTagSetProperties(uProperties) : NULL;
 
-			aCorkQueueIndices[0] = cxxTagCommit();
+			int iCorkQueueIndexFQ;
+			aCorkQueueIndices[0].leafnm = cxxTagCommit(&iCorkQueueIndexFQ);
+			aCorkQueueIndices[0].fqnm   = iCorkQueueIndexFQ;
 
 			if(pszProperties)
 				vStringDelete(pszProperties);
@@ -324,8 +342,13 @@ bool cxxParserParseNamespace(void)
 		cxxScopePop();
 		iScopeCount--;
 
-		if(aCorkQueueIndices[iScopeCount] > CORK_NIL)
-			cxxParserMarkEndLineForTagInCorkQueue(aCorkQueueIndices[iScopeCount]);
+		if(iScopeCount < MAX_NESTED_NAMESPACES)
+    {
+			if(aCorkQueueIndices[iScopeCount].leafnm > CORK_NIL)
+				cxxParserMarkEndLineForTagInCorkQueue(aCorkQueueIndices[iScopeCount].leafnm);
+			if(aCorkQueueIndices[iScopeCount].fqnm > CORK_NIL)
+				cxxParserMarkEndLineForTagInCorkQueue(aCorkQueueIndices[iScopeCount].fqnm);
+    }
 	}
 
 	CXX_DEBUG_LEAVE_TEXT("Finished parsing namespace");

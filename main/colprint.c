@@ -19,15 +19,16 @@
 
 
 enum colprintJustification {
-	COLPRINT_LEFT,				/* L:... */
-	COLPRINT_RIGHT,				/* R:... */
-	COLPRINT_LAST,
+	COLPRINT_LEFT  = 0,
+	COLPRINT_RIGHT = 1,
+	COLPRINT_JUST  = 1 << 0,
+	COLPRINT_LAST  = 1 << 1,	/* private use */
 };
 
 struct colprintHeaderColumn {
 	vString *value;
 	enum colprintJustification justification;
-	unsigned int maxWidth;
+	size_t maxWidth;
 	bool needPrefix;
 };
 
@@ -36,7 +37,7 @@ struct colprintTable {
 	ptrArray *lines;
 };
 
-static void fillWithWhitespaces (int i, FILE *fp)
+static void fillWithWhitespaces (size_t i, FILE *fp)
 {
 	while (i-- > 0)
 	{
@@ -101,7 +102,7 @@ struct colprintTable *colprintTableNew (const char* columnHeader, ... /* NULL TE
 
 	struct colprintHeaderColumn *last_col =	ptrArrayLast (table->header);
 	if (last_col)
-		last_col->justification = COLPRINT_LAST;
+		last_col->justification |= COLPRINT_LAST;
 
 	return table;
 }
@@ -119,7 +120,7 @@ void colprintTableDelete (struct colprintTable *table)
 
 static void colprintColumnPrintGeneric (vString *column, struct colprintHeaderColumn *spec, bool machinable, FILE *fp)
 {
-	int maxWidth = spec->maxWidth + (spec->needPrefix? 1: 0);
+	size_t maxWidth = spec->maxWidth + (spec->needPrefix? 1: 0);
 
 	if ((column == spec->value) && (spec->needPrefix))
 	{
@@ -130,23 +131,25 @@ static void colprintColumnPrintGeneric (vString *column, struct colprintHeaderCo
 	if (machinable)
 	{
 		fputs (vStringValue (column), fp);
-		if (spec->justification != COLPRINT_LAST)
+		if (! (spec->justification & COLPRINT_LAST))
 			fputc ('\t', fp);
 	}
 	else
 	{
-		int padLen = maxWidth - vStringLength (column);
-		if (spec->justification == COLPRINT_LEFT
-			|| spec->justification == COLPRINT_LAST)
+		size_t padLen = 0;
+		size_t colLen = vStringLength (column);
+		if (colLen < maxWidth)
+			padLen = maxWidth - colLen;
+		if ((spec->justification & COLPRINT_JUST) == COLPRINT_LEFT)
 		{
 			fputs (vStringValue (column), fp);
-			if (spec->justification != COLPRINT_LAST)
+			if (! (spec->justification & COLPRINT_LAST))
 			{
 				fillWithWhitespaces (padLen, fp);
 				fputc (' ', fp);
 			}
 		}
-		else
+		else if ((spec->justification & COLPRINT_JUST) == COLPRINT_RIGHT)
 		{
 			fillWithWhitespaces (padLen, fp);
 			fputs (vStringValue (column), fp);
@@ -273,13 +276,20 @@ void colprintLineAppendColumnInt  (struct colprintLine *line, unsigned int colum
 {
 	char buf[12];
 
-	snprintf(buf, 12, "%u", column);
+	snprintf(buf, sizeof(buf), "%u", column);
 	colprintLineAppendColumnCString	(line, buf);
 }
 
 void colprintLineAppendColumnBool  (struct colprintLine *line, bool column)
 {
 	colprintLineAppendColumnCString	(line, column? "yes": "no");
+}
+
+void colprintLineAppendColumnVersion (struct colprintLine *line, unsigned int version)
+{
+	char buf[12+1];
+	snprintf(buf, sizeof(buf), "%u", version);
+	colprintLineAppendColumnCString	(line, buf);
 }
 
 const char *colprintLineGetColumn (struct colprintLine *line, unsigned int column)

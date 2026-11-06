@@ -38,16 +38,28 @@ static kindDefinition PascalKinds [] = {
 */
 
 static void createPascalTag (
-		tagEntryInfo* const tag, const vString* const name, const int kind)
+		tagEntryInfo* const tag, const vString* const name, const int kind,
+		const vString *arglist, const vString *vartype)
 {
 	if (PascalKinds [kind].enabled  &&  name != NULL  &&  vStringLength (name) > 0)
+	{
 		initTagEntry (tag, vStringValue (name), kind);
+		if (arglist && !vStringIsEmpty (arglist))
+		{
+			tag->extensionFields.signature = vStringValue (arglist);
+		}
+		if (vartype && !vStringIsEmpty (vartype))
+		{
+			tag->extensionFields.typeRef[0] = "typename";
+			tag->extensionFields.typeRef[1] = vStringValue (vartype);
+		}
+	}
 	else
 		/* TODO: Passing NULL as name makes an assertion behind initTagEntry failure */
 		initTagEntry (tag, NULL, KIND_GHOST_INDEX);
 }
 
-static void makePascalTag (const tagEntryInfo* const tag)
+static void makePascalTag (tagEntryInfo* const tag)
 {
 	if (tag->name != NULL)
 		makeTagEntry (tag);
@@ -55,16 +67,16 @@ static void makePascalTag (const tagEntryInfo* const tag)
 
 static const unsigned char* dbp;
 
-#define starttoken(c) (isalpha ((int) c) || (int) c == '_')
-#define intoken(c)    (isalnum ((int) c) || (int) c == '_' || (int) c == '.')
-#define endtoken(c)   (! intoken (c)  &&  ! isdigit ((int) c))
+#define starttoken(c) (isalpha ((unsigned char) c) || (int) c == '_')
+#define intoken(c)    (isalnum ((unsigned char) c) || (int) c == '_' || (int) c == '.')
+#define endtoken(c)   (! intoken (c)  &&  ! isdigit ((unsigned char) c))
 
 static bool tail (const char *cp)
 {
 	bool result = false;
 	register int len = 0;
 
-	while (*cp != '\0' && tolower ((int) *cp) == tolower ((int) dbp [len]))
+	while (*cp != '\0' && tolower ((unsigned char) *cp) == tolower (dbp [len]))
 		cp++, len++;
 	if (*cp == '\0' && !intoken (dbp [len]))
 	{
@@ -72,6 +84,64 @@ static bool tail (const char *cp)
 		result = true;
 	}
 	return result;
+}
+
+static void parseArglist (const char *buf, vString *arglist, vString *vartype)
+{
+	const char *start, *end;
+	int level;
+
+	if (NULL == buf || arglist == NULL)
+		return;
+
+	/* parse argument list which can be missing like in "function ginit:integer;" */
+	if (NULL != (start = strchr (buf, '(')))
+	{
+		for (level = 1, end = start + 1; level > 0; ++end)
+		{
+			if ('\0' == *end)
+				break;
+			else if ('(' == *end)
+				++ level;
+			else if (')' == *end)
+				-- level;
+		}
+	}
+	else /* if no argument list was found, continue looking for a return value */
+	{
+		start = NULL;
+		end = buf;
+	}
+
+	/* parse return type if requested by passing a non-NULL vartype argument */
+	if (NULL != vartype)
+	{
+		const char *var, *var_start;
+
+		if (NULL != (var = strchr (end, ':')))
+		{
+			var++; /* skip ':' */
+			while (isspace ((unsigned char) *var))
+				++var;
+
+			if (starttoken (*var))
+			{
+				var_start = var;
+				var++;
+				while (intoken (*var))
+					var++;
+				if (endtoken (*var))
+				{
+					vStringNCatS (vartype, var_start, var - var_start);
+				}
+			}
+		}
+	}
+
+	if (NULL == start) /* no argument list */
+		vStringCatS (arglist, "()");
+	else
+		vStringNCatS (arglist, start, end - start);
 }
 
 /* Algorithm adapted from from GNU etags.
@@ -83,6 +153,8 @@ static bool tail (const char *cp)
 static void findPascalTags (void)
 {
 	vString *name = vStringNew ();
+	vString *arglist = vStringNew ();
+	vString *vartype = vStringNew ();
 	tagEntryInfo tag;
 	pascalKind kind = K_FUNCTION;
 		/* each of these flags is true iff: */
@@ -106,6 +178,9 @@ static void findPascalTags (void)
 
 		if (c == '\0')  /* if end of line */
 		{
+			if (incomment && comment_char == '/')
+				incomment = false;
+
 			dbp = readLineFromInputFile ();
 			if (dbp == NULL  ||  *dbp == '\0')
 				continue;
@@ -141,6 +216,14 @@ static void findPascalTags (void)
 				incomment = true;
 				comment_char = c;
 				continue;
+			case '/':
+				if (*dbp == '/')  /* found one line // comment */
+				{
+					incomment = true;
+					comment_char = c;
+					dbp++;
+				}
+				continue;
 			case '(':
 				if (*dbp == '*')  /* found open (* comment */
 				{
@@ -168,7 +251,7 @@ static void findPascalTags (void)
 			/* check if this is an "extern" declaration */
 			if (*dbp == '\0')
 				continue;
-			if (tolower ((int) *dbp == 'e'))
+			if (tolower (*dbp == 'e'))
 			{
 				if (tail ("extern"))  /* superfluous, really! */
 				{
@@ -176,7 +259,7 @@ static void findPascalTags (void)
 					verify_tag = false;
 				}
 			}
-			else if (tolower ((int) *dbp) == 'f')
+			else if (tolower (*dbp) == 'f')
 			{
 				if (tail ("forward"))  /*  check for forward reference */
 				{
@@ -200,12 +283,19 @@ static void findPascalTags (void)
 				continue;
 
 			/* grab block name */
-			while (isspace ((int) *dbp))
+			while (isspace (*dbp))
 				++dbp;
+			if (!starttoken(*dbp))
+				continue;
 			for (cp = dbp  ;  *cp != '\0' && !endtoken (*cp)  ;  cp++)
 				continue;
 			vStringNCopyS (name, (const char*) dbp,  cp - dbp);
-			createPascalTag (&tag, name, kind);
+
+			vStringClear (arglist);
+			vStringClear (vartype);
+			parseArglist ((const char*) cp, arglist, (kind == K_FUNCTION) ? vartype : NULL);
+
+			createPascalTag (&tag, name, kind, arglist, (kind == K_FUNCTION) ? vartype : NULL);
 			dbp = cp;  /* set dbp to e-o-token */
 			get_tagname = false;
 			found_tag = true;
@@ -213,7 +303,7 @@ static void findPascalTags (void)
 		}
 		else if (!incomment && !inquote && !found_tag)
 		{
-			switch (tolower ((int) c))
+			switch (tolower (c))
 			{
 				case 'c':
 					if (tail ("onstructor"))
@@ -246,6 +336,8 @@ static void findPascalTags (void)
 			}
 		}  /* while not eof */
 	}
+	vStringDelete (arglist);
+	vStringDelete (vartype);
 	vStringDelete (name);
 }
 

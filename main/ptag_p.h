@@ -43,6 +43,8 @@ typedef enum ePtagType { /* pseudo tag content control */
 	PTAG_PATTERN_TRUNCATION,
 	PTAG_PROC_CWD,
 	PTAG_OUTPUT_EXCMD,
+	PTAG_PARSER_VERSION,
+	PTAG_OUTPUT_VERSION,
 	PTAG_COUNT
 } ptagType;
 
@@ -64,11 +66,16 @@ struct sPtagDesc {
 	 * are passed.
 	 *
 	 * For parser specific ptags, the pointer for parserObject
-	 * of the parser is passed as the thrid argument.
+	 * of the parser is passed as the third argument.
 	 */
 	bool (* makeTag) (ptagDesc *, langType, const void *);
 
 	ptagFlag flags;
+
+	/* See writer-json.c */
+	const char *jsonObjectKey;
+
+	unsigned int version;
 };
 
 extern bool makePtagIfEnabled (ptagType type, langType language, const void *data);

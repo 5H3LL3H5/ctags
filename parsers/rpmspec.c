@@ -6,6 +6,11 @@
 *   GNU General Public License version 2 or (at your option) any later version.
 *
 *   This module contains functions for generating tags for rpm spec files.
+*
+*   References:
+*   	- https://rpm-software-management.github.io/rpm/manual/macros.html
+*   	- https://rpm-software-management.github.io/rpm/manual/spec.html
+*   	- http://ftp.rpm.org/api/4.4.2.2/dependencies.html
 */
 
 /*
@@ -13,7 +18,6 @@
  *
  * 1. Capturing required and provide packages as reference tags
  * 2. Capturing bz numbers and package versions in %changelog section
- * 3. Capturing %configure --enable-FOO --with-BAR
  */
 #include "general.h"  /* must always come first */
 
@@ -31,7 +35,8 @@
 #include "routines.h"
 #include "trace.h"
 
-#include "autoconf.h"
+#include "dependency.h"
+#include "x-autoconf.h"
 
 typedef enum {
 	K_TAG,
@@ -39,6 +44,7 @@ typedef enum {
 	K_PACKAGE,
 	K_GLOBAL,
 	K_PATCH,
+	K_BCOND,
 } rpmSpecKind;
 
 enum rpmSpecMacroRole {
@@ -71,6 +77,9 @@ static kindDefinition RpmSpecKinds[] = {
 	{ true, 'g', "global", "global macros" },
 	{ true, 'p', "patch", "patch files",
 	  .referenceOnly = true, ATTACH_ROLES(RpmSpecPatchRoles) },
+	{ true, 'b', "bcond", "build condition",
+	  .version = 1 },
+
 };
 
 struct macro_cb_data {
@@ -88,6 +97,7 @@ struct rpmSpecCtx {
 	bool in_configure;
 } rpmSpecCtx;
 
+static langType Lang_autoconf;
 
 static bool is_line_continued(const char *line)
 {
@@ -133,7 +143,7 @@ static void scan_configure_options (const char *line)
 			tmp += strlen(prefix->prefix);
 			while (*tmp)
 			{
-				if (isspace (*tmp) || iscntrl (*tmp)
+				if (isspace ((unsigned char) *tmp) || iscntrl ((unsigned char) *tmp)
 					|| *tmp == '=' || *tmp == '\\')
 					break;
 				vStringPut(name, *tmp);
@@ -145,7 +155,7 @@ static void scan_configure_options (const char *line)
 
 				initForeignRefTagEntry (&e,
 										vStringValue (name),
-										getNamedLanguage ("Autoconf", 0),
+										Lang_autoconf,
 										prefix->kindIndex,
 										prefix->roleIndex);
 				makeTagEntry (&e);
@@ -212,7 +222,7 @@ static bool found_macro_cb_full (const char *line,
 		if (!ctx->rejecting)
 		{
 			/* The line is not continued. Let's record the endLine now. */
-			tag.extensionFields.endLine = getInputLineNumber();
+			setTagEndLine (&tag, getInputLineNumber());
 		}
 
 		int cork_index = makeTagEntry (&tag);
@@ -257,7 +267,7 @@ static bool found_undef_cb (const char *line,
 
 static bool alldigits (const char * str)
 {
-	while (isdigit ((int)*str))
+	while (isdigit ((unsigned char) *str))
 		str++;
 
 	if (*str == '\0')
@@ -305,17 +315,55 @@ static bool found_package_cb (const char *line,
 			      unsigned int count,
 			      void *userData)
 {
-	if (count > 0)
-	{
-		vString *name = vStringNew ();
-		tagEntryInfo tag;
+	if (count == 0)
+		return true;
 
-		vStringNCopyS (name, line + matches[2].start, matches[2].length);
-		initTagEntry (&tag, vStringValue (name), K_PACKAGE);
-		tag.extensionFields.scopeIndex = ((struct rpmSpecCtx *)userData)->package_index;
-		makeTagEntry (&tag);
-		vStringDelete (name);
-	}
+	/* ---
+	 * NAME: foo
+	 * %package bar
+	 * ---
+	 * In this case, emit foo-bar as a FQ tag.
+	 *
+	 * ---
+	 * NAME: foo
+	 * %package -n baz
+	 * ---
+	 * In this case, don't emit FQ tag.
+	 */
+	bool fq = true;
+
+	/* strlen("-n") => 2 */
+	if (matches[1].length > 2)
+		fq = false;
+
+	vString *name = vStringNew ();
+	tagEntryInfo tag;
+
+	vStringNCopyS (name, line + matches[2].start, matches[2].length);
+	initTagEntry (&tag, vStringValue (name), K_PACKAGE);
+	tag.extensionFields.scopeIndex = ((struct rpmSpecCtx *)userData)->package_index;
+
+	if (!fq)
+		tag.skipAutoFQEmission = 1;
+
+	makeTagEntry (&tag);
+	vStringDelete (name);
+
+	return true;
+}
+
+static bool found_bcond_cb (const char *line,
+			      const regexMatch *matches,
+			      unsigned int count,
+			      void *userData)
+{
+	char *name = eStrndup(line + matches[2].start, matches[2].length);
+	tagEntryInfo tag;
+
+	initTagEntry (&tag, name, K_BCOND);
+
+	makeTagEntry (&tag);
+	eFree (name);
 	return true;
 }
 
@@ -334,7 +382,7 @@ static bool check_line_continuation (const char *line,
 	tagEntryInfo *e = getEntryInCorkQueue (ctx->macro_index);
 	if (rejecting && (!ctx->rejecting) && e)
 	{
-		e->extensionFields.endLine = getInputLineNumber();
+		setTagEndLine (e, getInputLineNumber());
 		ctx->macro_index = CORK_NIL;
 	}
 	else if (rejecting && ctx->in_configure)
@@ -374,6 +422,8 @@ static void initializeRpmSpecParser (langType language)
 			  "{exclusive}", found_global_cb, &rpmSpecCtx.rejecting, &rpmSpecCtx);
 	addLanguageCallbackRegex (language, "^%package[ \t]+(-n[ \t]+)?([A-Za-z_][A-Za-z_0-9-]+)",
 			  "{exclusive}", found_package_cb, &rpmSpecCtx.rejecting, &rpmSpecCtx);
+	addLanguageCallbackRegex (language, "^%bcond(|_without|_with)[ \t]+([A-Za-z_]+)",
+			  "{exclusive}", found_bcond_cb, &rpmSpecCtx.rejecting, &rpmSpecCtx);
 	addLanguageCallbackRegex (language, "^.*$",
 			  "{exclusive}", check_line_continuation, NULL, &rpmSpecCtx);
 }
@@ -385,14 +435,23 @@ extern parserDefinition* RpmSpecParser (void)
 		"rpm-spec",				/* the mode name in Emacs */
 		NULL };
 	parserDefinition* const def = parserNew ("RpmSpec");
+
+	static parserDependency dependencies [] = {
+		[0] = { DEPTYPE_FOREIGNER, "Autoconf", &Lang_autoconf },
+	};
+
 	def->kindTable = RpmSpecKinds;
 	def->kindCount = ARRAY_SIZE (RpmSpecKinds);
 	def->extensions = extensions;
 	def->aliases = aliases;
+	def->dependencies = dependencies;
+	def->dependencyCount = ARRAY_SIZE (dependencies);
 	def->initialize = initializeRpmSpecParser;
 	def->parser = findRpmSpecTags;
 	def->method     = METHOD_REGEX;
 	def->useCork = CORK_QUEUE;
 	def->requestAutomaticFQTag = true;
+	def->versionCurrent = 1;
+	def->versionAge = 1;
 	return def;
 }

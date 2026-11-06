@@ -118,6 +118,27 @@
     exch copy pop
 } __bddef
 
+(string _CHOP string)
+/_chop {
+    mark exch {} forall pop _buildstring
+} __bddef
+
+(string _CHOP_SPACE string)
+/_chop_space {
+    dup length dup 0 gt {
+        % string length
+        1 sub
+        % string `length - 1`
+        1 index exch
+        % string string `length - 1`
+        get (\n\t\r\f\v ) exch _amember {
+            _chop
+        } if
+    } {
+        pop                     % pop the length
+    } ifelse
+} __bddef
+
 % /x mark 40 (a) 32 32 10 (b) 10 10 9 9 (xyz) 9 9 41 _buildstring def
 % x _normalize_spaces! x pstack
 
@@ -141,7 +162,7 @@
     } ifelse
 } __bddef
 
-(array key _AMEMBER true|fales)
+(array key _AMEMBER true|false)
 /_amember {
     false 3 1 roll
     % false array key
@@ -157,4 +178,89 @@
         % false key
     } forall
     pop
+} __bddef
+
+(array key _AINDEX nth:int true
+ array key _AINDEX false)
+/_aindex {
+    0 3 1 roll
+    % idx array key
+    exch {
+        % idx key elt
+        1 index
+        eq {
+            % idx key
+            pop true exit
+        } {
+            % idx key
+            exch 1 add exch
+        } ifelse
+    } forall
+    dup true ne { pop pop false } if
+} __bddef
+
+% define @1 ~ @9.
+1 1 9 {
+    dup
+    mark (- @) 3 -1 roll ?0 add ( start:matchloc) _buildstring
+    exch dup
+    mark (@) 3 -1 roll ?0 add _buildstring cvn
+    exch
+    [ exch /start /_matchloc cvx ] cvx __bddef
+} for
+
+% define 1@ ~ 9@.
+1 1 9 {
+    dup
+    mark (- ) 3 -1 roll ?0 add (@ end:matchloc) _buildstring
+    exch dup
+    mark exch ?0 add (@) _buildstring cvn
+    exch
+    [ exch /end /_matchloc cvx ] cvx __bddef
+} for
+
+(name:str kind:name matchloc _TAG tag
+ name:str kind:name _TAG tag)
+/_tag {
+    dup type /nametype eq {
+        % name:str kind:name
+        null exch null
+        % name:str null kind:name null
+    } {
+        % name:str kind:name matchloc
+        null 3 1 roll null exch
+        % name:str null kind:name matchloc null
+    } ifelse
+    _foreignreftag
+} __bddef
+
+(name:str kind:name role:name matchloc _REFTAG tag
+ name:str kind:name role:name _REFTAG tag)
+/_reftag {
+    dup type /nametype eq {
+        % name:str kind:name role:name
+        null 3 1 roll
+        % name:str null kind:name role:name
+    } {
+        % name:str kind:name role:name matchloc
+        null 4 1 roll
+        % name:str null kind:name role:name matchloc
+    } ifelse
+    _foreignreftag
+} __bddef
+
+(name:str lang:name kind:name matchloc _FOREIGNTAG tag
+ name:str lang:name kind:name _FOREIGNTAG tag)
+/_foreigntag {
+    dup type /nametype eq {
+        % name:str lang:name kind:name
+        null
+        % name:str lang:name kind:name null
+        _foreignreftag
+    } {
+        % name:str language:name kind:name matchloc
+        null exch
+        % name:str language:name kind:name null matchloc
+        _foreignreftag
+    } ifelse
 } __bddef

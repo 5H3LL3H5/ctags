@@ -20,6 +20,7 @@
 	PlistXMLParser, \
 	RelaxNGParser, \
 	SvgParser, \
+	XrcParser, \
 	XmlParser, \
 	XsltParser
 #else
@@ -29,7 +30,10 @@
 #ifdef HAVE_LIBYAML
 #define YAML_PARSER_LIST						\
 	YamlParser,									\
-	AnsiblePlaybookParser
+	AnsiblePlaybookParser, \
+	I18nRubyGemParser, \
+	OpenAPIParser, \
+	YamlFrontMatter
 #else
 #define YAML_PARSER_LIST
 #endif
@@ -37,9 +41,19 @@
 #ifdef HAVE_PACKCC
 #define PEG_PARSER_LIST						\
 	VarlinkParser, \
-	KotlinParser
+	KotlinParser,  \
+	ThriftParser,  \
+	ElmParser,     \
+	TomlParser
 #else
 #define PEG_PARSER_LIST
+#endif
+
+#ifdef HAVE_PCRE2
+#define OPTLIB2C_PCRE2_PARSER_LIST			\
+	RDocParser
+#else
+#define OPTLIB2C_PCRE2_PARSER_LIST
 #endif
 
 /* Add the name of any new parser definition function here */
@@ -56,11 +70,14 @@
 	AutomakeParser, \
 	AwkParser, \
 	BasicParser, \
+	BatsParser, \
 	BetaParser, \
-  	BibtexParser, \
+	BibLaTeXParser, \
+	BibtexParser, \
 	ClojureParser, \
 	CMakeParser, \
 	CParser, \
+	CargoParser, \
 	CppParser, \
 	CPreProParser, \
 	CssParser, \
@@ -71,22 +88,28 @@
 	CobolVariableParser, \
 	CUDAParser, \
 	DParser, \
+	DbusServiceParser, \
 	DiffParser, \
 	DtdParser, \
 	DTSParser, \
 	DosBatchParser, \
 	EiffelParser, \
 	ElixirParser, \
-	ElmParser, \
 	EmacsLispParser, \
 	ErlangParser, \
 	FalconParser, \
 	FlexParser, \
+	ForthParser, \
 	FortranParser, \
+	FrontMatterParser, \
 	FunctionParametersParser, \
 	FyppParser,	   \
 	GdbinitParser, \
+	GDScriptParser, \
+	GemSpecParser, \
 	GoParser, \
+	GoModParser, \
+	GPerfParser, \
 	HaskellParser, \
 	HaxeParser, \
 	HtmlParser, \
@@ -97,10 +120,12 @@
 	JavaParser, \
 	JavaPropertiesParser, \
 	JavaScriptParser, \
+	JNIParser, \
 	JsonParser, \
 	JuliaParser, \
 	KconfigParser, \
 	LdScriptParser, \
+	LEXParser, \
 	LispParser, \
 	LiterateHaskellParser, \
 	LuaParser, \
@@ -113,25 +138,33 @@
 	MesonOptionsParser, \
 	MooseParser, \
 	MyrddinParser, \
+	NftablesParser, \
 	NsisParser, \
 	ObjcParser, \
-	OldCppParser, \
-	OldCParser, \
 	OcamlParser, \
+	OdinParser, \
+	OrgParser, \
 	PasswdParser, \
 	PascalParser, \
 	PerlParser, \
 	Perl6Parser, \
 	PhpParser, \
+	PkgConfigParser, \
 	PodParser, \
 	PowerShellParser, \
+	PrologParser, \
 	ProtobufParser, \
 	PuppetManifestParser, \
 	PythonParser, \
+	PythonEntryPointsParser, \
 	PythonLoggingConfigParser, \
 	QemuHXParser, \
 	QtMocParser, \
+	QuartoParser, \
+	RMarkdownParser, \
 	RParser, \
+	RakeParser, \
+	RakuParser, \
 	R6ClassParser, \
 	RSpecParser, \
 	RexxParser, \
@@ -144,27 +177,36 @@
 	S4ClassParser, \
 	SchemeParser, \
 	SCSSParser, \
+	SELinuxInterfaceParser, \
+	SELinuxTypeEnforcementParser, \
+	SinexParser, \
 	ShParser, \
 	SlangParser, \
 	SmlParser, \
+	ScdocParser, \
 	SqlParser, \
 	SystemdUnitParser, \
 	SystemTapParser, \
 	TclParser, \
 	TclOOParser, \
+	TerraformParser, \
+	TerraformVariablesParser, \
 	TexParser, \
 	TexBeamerParser, \
 	TTCNParser, \
 	Txt2tagsParser, \
 	TypeScriptParser, \
+	TypeSpecParser, \
+	VParser, \
 	VeraParser, \
 	VerilogParser, \
 	SystemVerilogParser, \
 	VhdlParser, \
 	VimParser, \
 	WindResParser, \
-	YaccParser, \
+	YACCParser, \
 	YumRepoParser, \
-	ZephirParser
+	ZephirParser, \
+	ZshParser
 
 #endif  /* CTAGS_MAIN_PARSERS_H */

@@ -56,6 +56,13 @@ bool cxxScopeIsGlobal(void)
 	return (g_pScope->iCount < 1);
 }
 
+bool cxxScopeIsExported(void)
+{
+	if (g_pScope->pTail)
+		return g_pScope->pTail->bInternalScopeExported;
+	return false;
+}
+
 enum CXXScopeType cxxScopeGetType(void)
 {
 	if(g_pScope->iCount < 1)
@@ -112,6 +119,8 @@ unsigned int cxxScopeGetKind(void)
 			return CXXTagKindVARIABLE;
 		case CXXScopeTypeTypedef:
 			return CXXTagKindTYPEDEF;
+		case CXXScopeTypeModule:
+			return CXXTagCPPKindMODULE;
 		default:
 			CXX_DEBUG_ASSERT(false,"Unhandled scope type!");
 			break;
@@ -135,6 +144,13 @@ const char * cxxScopeGetName(void)
 	return vStringValue(g_pScope->pTail->pszWord);
 }
 
+int cxxScopeGetDefTag(void)
+{
+	if(g_pScope->iCount < 1)
+		return CORK_NIL;
+	return g_pScope->pTail->iCorkIndex;
+}
+
 int cxxScopeGetSize(void)
 {
 	return g_pScope->iCount;
@@ -143,7 +159,7 @@ int cxxScopeGetSize(void)
 const char * cxxScopeGetFullName(void)
 {
 	if(!g_bScopeNameDirty)
-		return g_szScopeName ? g_szScopeName->buffer : NULL;
+		return g_szScopeName ? vStringValue(g_szScopeName): NULL;
 
 	if(g_pScope->iCount < 1)
 	{
@@ -151,10 +167,7 @@ const char * cxxScopeGetFullName(void)
 		return NULL;
 	}
 
-	if(g_szScopeName)
-		vStringClear(g_szScopeName);
-	else
-		g_szScopeName = vStringNew();
+	g_szScopeName = vStringNewOrClear(g_szScopeName);
 
 	cxxTokenChainJoinInString(
 			g_pScope,
@@ -164,7 +177,7 @@ const char * cxxScopeGetFullName(void)
 		);
 
 	g_bScopeNameDirty = false;
-	return g_szScopeName->buffer;
+	return vStringValue(g_szScopeName);
 }
 
 vString * cxxScopeGetFullNameAsString(void)
@@ -182,10 +195,7 @@ vString * cxxScopeGetFullNameAsString(void)
 	if(g_pScope->iCount < 1)
 		return NULL;
 
-	if(g_szScopeName)
-		vStringClear(g_szScopeName);
-	else
-		g_szScopeName = vStringNew();
+	g_szScopeName = vStringNewOrClear(g_szScopeName);
 
 	cxxTokenChainJoinInString(
 			g_pScope,
@@ -223,13 +233,18 @@ void cxxScopeSetAccess(enum CXXScopeAccess eAccess)
 void cxxScopePushTop(CXXToken * t)
 {
 	CXX_DEBUG_ASSERT(
-			t->eType == CXXTokenTypeIdentifier,
+			cxxTokenTypeIs(t, CXXTokenTypeIdentifier),
 			"The scope name must be an identifier"
 		);
 	CXX_DEBUG_ASSERT(
 			t->pszWord,
 			"The scope name should have a text"
 		);
+
+	// Inherit the export'ed status from the parent scope.
+	// You can override the inherited status with cxxScopePushExported().
+	if (g_pScope->pTail && g_pScope->pTail->bInternalScopeExported)
+		t->bInternalScopeExported = true;
 
 	cxxTokenChainAppend(g_pScope,t);
 	g_bScopeNameDirty = true;
@@ -268,6 +283,18 @@ void cxxScopePush(
 	t->uInternalScopeType = (unsigned char)eScopeType;
 	t->uInternalScopeAccess = (unsigned char)eInitialAccess;
 	cxxScopePushTop(t);
+}
+
+void cxxScopePushExported(
+		CXXToken * t,
+		enum CXXScopeType eScopeType,
+		enum CXXScopeAccess eInitialAccess,
+		bool exported
+	)
+{
+	cxxScopePush(t, eScopeType, eInitialAccess);
+	// Overwrite the default value inherited from the parent scope.
+	t->bInternalScopeExported = exported;
 }
 
 void cxxScopePop(void)

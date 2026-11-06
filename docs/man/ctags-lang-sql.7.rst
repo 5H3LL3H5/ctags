@@ -6,7 +6,7 @@ ctags-lang-sql
 
 The man page of the SQL parser for Universal Ctags
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 7
 
@@ -29,7 +29,7 @@ is enabled.
 The SQL parser looks for a token coming after ``LANGUAGE`` keyword in
 the source code to choose a proper guest parser.
 
-.. code-block:: SQL
+.. code-block:: psql
 
    ... LANGUAGE plpythonu AS '... user-defined function ' ...
    ... AS $$ user-defined function $$ LANGUAGE plv8 ...
@@ -47,12 +47,11 @@ guest parser for ``plv8``.
 
 EXAMPLES
 --------
-
 tagging code including a user-defined function in a string literal [GH3006]_:
 
 "input.sql"
 
-.. code-block:: SQL
+.. code-block:: psql
 
 	CREATE OR REPLACE FUNCTION fun1() RETURNS VARCHAR AS '
 	DECLARE
@@ -69,7 +68,7 @@ with "--options=NONE -o - --sort=no --extras=+{guest} input.sql"
 
 .. code-block:: tags
 
-	fun1	input.sql	/^CREATE OR REPLACE FUNCTION fun1() RETURNS VARCHAR AS '$/;"	f
+	fun1	input.sql	/^CREATE OR REPLACE FUNCTION fun1() RETURNS VARCHAR AS '$/;"	f	typeref:typename:VARCHAR
 	test1_var1	input.sql	/^	test1_var1 VARCHAR(64) := $$ABC$$;$/;"	v
 	test1_var2	input.sql	/^	test1_var2 VARCHAR(64) := $xyz$XYZ$xyz$;$/;"	v
 	test1_var3	input.sql	/^	test1_var3     INTEGER := 1;$/;"	v
@@ -78,7 +77,7 @@ tagging code including a user-defined function in a dollar quote [GH3006]_:
 
 "input.sql"
 
-.. code-block:: SQL
+.. code-block:: psql
 
 	CREATE OR REPLACE FUNCTION fun2() RETURNS VARCHAR LANGUAGE plpgsql AS $$
 	DECLARE
@@ -95,14 +94,14 @@ with "--options=NONE -o - --sort=no --extras=+{guest} input.sql"
 
 .. code-block:: tags
 
-	fun2	input.sql	/^CREATE OR REPLACE FUNCTION fun2() RETURNS VARCHAR LANGUAGE plpgsql AS $\$$/;"	f
+	fun2	input.sql	/^CREATE OR REPLACE FUNCTION fun2() RETURNS VARCHAR LANGUAGE plpgsql AS $\$$/;"	f	typeref:typename:VARCHAR
 	test2_var1	input.sql	/^	test2_var1 VARCHAR(64) := 'ABC2';$/;"	v
 	test2_var2	input.sql	/^	test2_var2 VARCHAR(64) := 'XYZ2';$/;"	v
 	test2_var3	input.sql	/^	test2_var3        INTEGER := 2;$/;"	v
 
 tagging code including a user-defined written in JavaScript:
 
-.. code-block:: SQL
+.. code-block:: psql
 
 	-- Derived from https://github.com/plv8/plv8/blob/r3.0alpha/sql/plv8.sql
 	CREATE FUNCTION test(keys text[], vals text[]) RETURNS text AS

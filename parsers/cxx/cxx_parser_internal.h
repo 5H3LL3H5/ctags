@@ -149,7 +149,7 @@ typedef struct _CXXFunctionSignatureInfo
 	CXXToken * pTemplateSpecializationStart;
 	CXXToken * pTemplateSpecializationEnd;
 
-	// Additional informations
+	// Additional information
 	unsigned int uFlags;
 
 } CXXFunctionSignatureInfo;
@@ -157,7 +157,8 @@ typedef struct _CXXFunctionSignatureInfo
 int cxxParserMaybeParseKnRStyleFunctionDefinition(void);
 int cxxParserExtractFunctionSignatureBeforeOpeningBracket(
 		CXXFunctionSignatureInfo * pInfo,
-		int * piCorkQueueIndex
+		int * piCorkQueueIndex,
+		int * piCorkQueueIndexFQ
 	);
 
 /* This must be smaller than (sizeof(unsigned int) * 8).
@@ -201,7 +202,8 @@ int cxxParserEmitFunctionTags(
 		CXXFunctionSignatureInfo * pInfo,
 		unsigned int uTagKind,
 		unsigned int uOptions,
-		int * piCorkQueueIndex
+		int * piCorkQueueIndex,
+		int * piCorkQueueIndexFQ
 	);
 
 void cxxParserEmitFunctionParameterTags(CXXTypedVariableSet * pInfo);
@@ -217,7 +219,13 @@ void cxxParserExtractTypedef(
 // cxx_parser_namespace.c
 bool cxxParserParseNamespace(void);
 
+// cxx_parser_module.c
+bool cxxParserParseModule(void);
+bool cxxParserParseImport(void);
+void cxxParserDestroyCurrentModuleToken(void);
+
 // cxx_parser.c
+void cxxParserNewStatementFull(bool bExported);
 void cxxParserNewStatement(void);
 bool cxxParserSkipToSemicolonOrEOF(void);
 bool cxxParserParseToEndOfQualifedName(void);
@@ -282,6 +290,16 @@ typedef enum _CXXParserKeywordState
 	CXXParserKeywordStateSeenAttributeDeprecated = (1 << 11),
 	// "friend" has been seen at block level
 	CXXParserKeywordStateSeenFriend = (1 << 12),
+	// "constexpr" has been seen
+	CXXParserKeywordStateSeenConstexpr = (1 << 13),
+	// "consteval" has been seen
+	CXXParserKeywordStateSeenConsteval = (1 << 14),
+	// "constinit" has been seen
+	CXXParserKeywordStateSeenConstinit = (1 << 15),
+	// "thread_local" has been seen
+	CXXParserKeywordStateSeenThreadLocal = (1 << 16),
+	// "export" has been seen
+	CXXParserKeywordStateSeenExport = (1 << 17),
 } CXXParserKeywordState;
 
 #define CXX_PARSER_MAXIMUM_NESTING_LEVELS 1024
@@ -355,12 +373,18 @@ typedef struct _CXXParserState
 	//
 	// Note that this is really a kind-of arbitrary measure as the counter
 	// is increased in certain parser code paths that often lead to recursion.
-	// It does not necessairly match the real number of stack frames or nested
+	// It does not necessarily match the real number of stack frames or nested
 	// brackets/parentheses in the input.
 	//
 	// The counter is used to avoid stack overflow when nesting grows too much.
 	// This usually happens only with erroneous macro usage or broken input.
 	int iNestingLevels;
+
+	// The parser parsers CXX11Attribute ([[...]]).
+	// The function parsing CXX11Attribute doesn't consider
+	// CXX11Attributes nest like: [[[]]].
+	// bInCXX11Attribute guards the function being called recursively.
+	bool bInCXX11Attribute;
 
 } CXXParserState;
 

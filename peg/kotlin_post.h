@@ -26,65 +26,34 @@ static int getcFromKotlinFile(struct parserCtx *auxil)
     return c;
 }
 
-
-static void pushKind (struct parserCtx *auxil, int kind)
-{
-    intArrayAdd (auxil->kind_stack, kind);
-}
-
-static void popScope(struct parserCtx *auxil)
-{
-    tagEntryInfo *e = getEntryInCorkQueue (auxil->scope_cork_index);
-    if (e)
-        auxil->scope_cork_index = e->extensionFields.scopeIndex;
-}
-
-static void popKind (struct parserCtx *auxil, bool popScopeToo)
-{
-    intArrayRemoveLast (auxil->kind_stack);
-
-    if (popScopeToo)
-    {
-        popScope(auxil);
-    }
-}
-
-static int peekKind (struct parserCtx *auxil)
-{
-    return intArrayLast (auxil->kind_stack);
-}
-
-static void reportError (struct parserCtx *auxil)
-{
-    auxil->found_syntax_error = true;
-    fprintf(stderr, "%s: syntax error in \"%s\"\n", getLanguageName (getInputLanguage ()), getInputFileName());
-}
-
 static void makeKotlinTag (struct parserCtx *auxil, const char *name, long offset, bool pushScope)
 {
-    int k = peekKind (auxil);
+    int k = PEEK_KIND(auxil);
     if (k == K_IGNORE) return;
     tagEntryInfo e;
+    char *stripped = NULL;
     if (*name != '`')
     {
         initTagEntry(&e, name, k);
     } else
     {
-        size_t len = strlen(name) - 2;
-        char *stripped = (char *)eMalloc(len+1);
-        memcpy(stripped, name + 1, len);
-        stripped[len] = '\0';
+        size_t len = strlen(name);
+        Assert(len >= 2);
+        len -= 2;
+        stripped = eStrndup (name + 1, len);
         initTagEntry(&e, stripped, k);
-        eFree(stripped);
     }
-    e.lineNumber = getInputLineNumberForFileOffset (offset);
-    e.filePosition = getInputFilePositionForLine (e.lineNumber);
-    e.extensionFields.scopeIndex = auxil->scope_cork_index;
+    long abs_offset = translateFileOffset (offset);
+    unsigned long lineNumber = getInputLineNumberForFileOffset (abs_offset);
+    updateTagLine (&e, lineNumber, getInputFilePositionForLine (lineNumber));
+    e.extensionFields.scopeIndex = BASE_SCOPE(auxil);
     int scope_index = makeTagEntry (&e);
     if (pushScope)
     {
-        auxil->scope_cork_index = scope_index;
+        SET_SCOPE(auxil, scope_index);
     }
+    if (stripped)
+        eFree (stripped);
 }
 
 #ifdef DEBUG
@@ -92,7 +61,7 @@ static void reportFailure(struct parserCtx *auxil, long offset)
 {
     if(auxil->fail_offset < 0)
     {
-        auxil->fail_offset = offset;
+        auxil->fail_offset = translateFileOffset (offset);
     }
 }
 
@@ -100,8 +69,9 @@ static void resetFailure(struct parserCtx *auxil, long offset)
 {
     if(auxil->fail_offset >= 0)
     {
+        long abs_offset = translateFileOffset (offset);
         unsigned long startLine = getInputLineNumberForFileOffset(auxil->fail_offset);
-        unsigned long endLine = getInputLineNumberForFileOffset(offset-1);
+        unsigned long endLine = getInputLineNumberForFileOffset(abs_offset-1);
         if (startLine == endLine)
         {
             TRACE_PRINT("Failed to parse '%s' at line %lu!\n", getInputFileName(), startLine);
@@ -116,10 +86,7 @@ static void resetFailure(struct parserCtx *auxil, long offset)
 
 static void ctxInit (struct parserCtx *auxil)
 {
-    auxil->kind_stack = intArrayNew ();
-    pushKind (auxil, K_INTERFACE);
-    auxil->scope_cork_index = CORK_NIL;
-    auxil->found_syntax_error = false;
+    BASE_INIT(auxil, K_INTERFACE);
     auxil->parenthesis_level = 0;
     #ifdef DEBUG
     auxil->fail_offset = -1;
@@ -128,8 +95,7 @@ static void ctxInit (struct parserCtx *auxil)
 
 static void ctxFini (struct parserCtx *auxil)
 {
-    popKind (auxil, false);
-    intArrayDelete (auxil->kind_stack);
+    BASE_FINI(auxil);
 }
 
 static void findKotlinTags (void)
@@ -139,7 +105,7 @@ static void findKotlinTags (void)
     ctxInit (&auxil);
     pkotlin_context_t *pctx = pkotlin_create(&auxil);
 
-    while (pkotlin_parse(pctx, NULL) && (!auxil.found_syntax_error) );
+    while (pkotlin_parse(pctx, NULL) && (!BASE_ERROR(&auxil)) );
 
     pkotlin_destroy(pctx);
     ctxFini (&auxil);

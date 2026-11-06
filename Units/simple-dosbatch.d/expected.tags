@@ -1,0 +1,19 @@
+OPTIONS	input.cmd	/^SET OPTIONS=%1$/;"	v	roles:def
+SAMPLE_DATA	input.cmd	/^SET SAMPLE_DATA=%1$/;"	v	roles:def
+SAMPLE_DATA	input.cmd	/^if NOT '%SAMPLE_DATA%' EQU '' SET SAMPLE_DATA=1$/;"	v	roles:def
+SAMPLE_DATA	input.cmd	/^if '%SAMPLE_DATA%' EQU '' SET SAMPLE_DATA=0$/;"	v	roles:def
+SCRIPT_DIR	input.cmd	/^@IF NOT DEFINED SCRIPT_DIR FOR \/f %%i IN ('cd') DO @SET SCRIPT_DIR=%%i$/;"	v	roles:def
+setenv.cmd	input.cmd	/^CALL setenv.cmd $/;"	b	roles:called
+PATH	input.cmd	/^set PATH=%SQLANY11%\\bin32;%PATH%$/;"	v	roles:def
+OPTIONS	input.cmd	/^@if "%OPTIONS%." EQU "1." set OPTIONS=$/;"	v	roles:def
+cleanup11.cmd	input.cmd	/^CALL cleanup11.cmd $/;"	b	roles:called
+UPDATE	input.cmd	/^:UPDATE$/;"	l	roles:def
+SAMPLE_DATA	input.cmd	/^:SAMPLE_DATA$/;"	l	roles:def
+DONE	input.cmd	/^:DONE$/;"	l	roles:def
+ERROR	input.cmd	/^:ERROR$/;"	l	roles:def
+CURR_DIR	input.cmd	/^FOR \/f %%i IN ('cd') DO @SET CURR_DIR=%%i$/;"	v	roles:def
+ERROR_OPTIONS	input.cmd	/^:ERROR_OPTIONS$/;"	l	roles:def
+C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\vcvarsall.bat	input.cmd	/^call "C:\\Program Files (x86)\\Microsoft Visual Studio\\2019\\Community\\VC\\Auxiliary\\Build\\v/;"	b	roles:called
+END	input.cmd	/^:END$/;"	l	roles:def
+strip	input-0.cmd	/^for %%i in (*.exe) do call :strip %%i$/;"	l	roles:called
+strip	input-0.cmd	/^:strip$/;"	l	roles:def

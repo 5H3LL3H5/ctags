@@ -10,25 +10,25 @@
 OBJEXT = obj
 include source.mak
 
-GNULIB_HEADS = gnulib/regex.h gnulib/fnmatch.h
-GNULIB_SRCS = gnulib/regex.c gnulib/nl_langinfo.c gnulib/setlocale_null.c gnulib/malloc/dynarray_resize.c gnulib/fnmatch.c gnulib/mempcpy.c gnulib/wmempcpy.c
-
 COMMON_DEFINES =
-DEFINES = -DWIN32 $(COMMON_DEFINES) -DHAVE_REPOINFO_H -DHAVE_PACKCC -DREADTAGS_DSL
+DEFINES = $(COMMON_DEFINES) -DHAVE_REPOINFO_H -DHAVE_PACKCC
 INCLUDES = -I. -Ignulib -Imain -Iparsers -Ilibreadtags -Idsl
-OPT = /O2 /WX
+OPT = /O2 /WX /Zc:preprocessor
+LOPT = /FORCE:MULTIPLE
 PACKCC = packcc.exe
-GNULIB_OBJS = $(GNULIB_SRCS:.c=.obj)
+GNULIB_OBJS = $(MVC_GNULIB_SRCS:.c=.obj)
 WIN32_OBJS = $(WIN32_SRCS:.c=.obj)
 PEG_OBJS = $(PEG_SRCS:.c=.obj)
-PACKCC_OBJS = $(PACKCC_SRCS:.c=.obj)
+PACKCC_OBJ = $(PACKCC_SRC:.c=.obj)
 RES_OBJ = win32/ctags.res
 EXTRA_OBJS = $(GNULIB_OBJS) $(WIN32_OBJS) $(PEG_OBJS) $(RES_OBJ)
 ALL_OBJS = $(ALL_SRCS:.c=.obj) $(EXTRA_OBJS)
 ALL_LIB_OBJS = $(ALL_LIB_SRCS:.c=.obj) $(EXTRA_OBJS)
 READTAGS_OBJS = $(READTAGS_SRCS:.c=.obj)
+UTIL_OBJS = $(UTIL_SRCS:.c=.obj)
 READTAGS_DSL_OBJS = $(READTAGS_DSL_SRCS:.c=.obj)
 OPTSCRIPT_OBJS = $(OPTSCRIPT_SRCS:.c=.obj)
+UTILTEST_OBJS = $(UTILTEST_SRCS:.c=.obj)
 
 !if "$(WITH_ICONV)" == "yes"
 DEFINES = $(DEFINES) -DHAVE_ICONV
@@ -65,7 +65,7 @@ PDBFLAG =
 {extra-cmds}.c{extra-cmds}.obj::
 	$(CC) $(OPT) $(DEFINES) $(INCLUDES) /Foextra-cmds\ /c $<
 {libreadtags}.c{libreadtags}.obj::
-	$(CC) $(OPT) $(DEFINES) $(INCLUDES) /Folibreadtags\ /c $<
+	$(CC) $(OPT) $(DEFINES) -DHAVE_CTAGS_INLINE_H $(INCLUDES) /Folibreadtags\ /c $<
 {dsl}.c{dsl}.obj::
 	$(CC) $(OPT) $(DEFINES) $(INCLUDES) /Fodsl\ /c $<
 {win32\mkstemp}.c{win32\mkstemp}.obj::
@@ -79,29 +79,31 @@ PDBFLAG =
 {gnulib\malloc}.c{gnulib\malloc}.obj::
 	$(CC) $(OPT) $(DEFINES) $(INCLUDES) /Fognulib\malloc\ /c $<
 
-all: copy_gnulib_heads $(PACKCC) ctags.exe readtags.exe optscript.exe
+all: copy_gnulib_heads $(PACKCC) ctags.exe readtags.exe optscript.exe utiltest.exe
 
 ctags: ctags.exe
 
-ctags.exe: $(ALL_OBJS) $(ALL_HEADS) $(PEG_HEADS) $(PEG_EXTRA_HEADS) $(GNULIB_HEADS) $(WIN32_HEADS) $(REPOINFO_HEADS)
-	$(CC) $(OPT) /Fe$@ $(ALL_OBJS) /link setargv.obj $(LIBS) $(PDBFLAG)
+ctags.exe: $(ALL_OBJS) $(ALL_HEADS) $(PEG_HEADS) $(PEG_EXTRA_HEADS) $(MVC_GNULIB_HEADS) $(WIN32_HEADS) $(REPOINFO_HEADS)
+	$(CC) $(OPT) /Fe$@ $(ALL_OBJS) /link setargv.obj $(LOPT) $(LIBS) $(PDBFLAG)
 
-readtags.exe: $(READTAGS_OBJS) $(READTAGS_HEADS) $(READTAGS_DSL_OBJS) $(READTAGS_DSL_HEADS) $(GNULIB_OBJS) $(GNULIB_HEADS)
-	$(CC) $(OPT) /Fe$@ $(READTAGS_OBJS) $(READTAGS_DSL_OBJS) $(GNULIB_OBJS) /link setargv.obj $(PDBFLAG)
+readtags.exe: $(READTAGS_OBJS) $(READTAGS_HEADS) $(UTIL_OBJS) $(UTIL_HEADS) $(READTAGS_DSL_OBJS) $(READTAGS_DSL_HEADS) $(GNULIB_OBJS) $(MVC_GNULIB_HEADS) $(WIN32_HEADS) $(WIN32_OBJS)
+	$(CC) $(OPT) /Fe$@ $(READTAGS_OBJS) $(READTAGS_DSL_OBJS) $(UTIL_OBJS) $(GNULIB_OBJS) $(WIN32_OBJS) /link setargv.obj $(LOPT) $(PDBFLAG)
 
 optscript.exe: $(ALL_LIB_OBJS) $(OPTSCRIPT_OBJS) $(ALL_LIB_HEADS) $(OPTSCRIPT_DSL_HEADS) $(WIN32_HEADS)
-	$(CC) $(OPT) /Fe$@ $(ALL_LIB_OBJS) $(OPTSCRIPT_OBJS) /link setargv.obj $(LIBS)
+	$(CC) $(OPT) /Fe$@ $(ALL_LIB_OBJS) $(OPTSCRIPT_OBJS) /link setargv.obj $(LOPT) $(LIBS)
 
-$(PACKCC_OBJS): $(PACKCC_SRCS)
-	$(CC) /c $(OPT) /Fo$@ $(INCLUDES) $(COMMON_DEFINES) $(PACKCC_SRCS)
+utiltest.exe: $(UTIL_OBJS) $(UTIL_HEADS) $(UTILTEST_OBJS) $(UTILTEST_HEADS) $(WIN32_HEADS)
+	$(CC) $(OPT) /Fe$@ $(UTIL_OBJS) $(UTILTEST_OBJS) $(WIN32_OBJS) /link setargv.obj $(LOPT)
 
-$(PACKCC): $(PACKCC_OBJS)
-	$(CC) $(OPT) /Fe$@ $(PACKCC_OBJS) /link setargv.obj $(PDBFLAG)
+$(PACKCC_OBJ): $(PACKCC_SRC)
+	$(CC) /c $(OPT) /Fo$@ $(INCLUDES) $(COMMON_DEFINES) $(PACKCC_SRC)
+
+$(PACKCC): $(PACKCC_OBJ)
+	$(CC) $(OPT) /Fe$@ $(PACKCC_OBJ) /link setargv.obj $(LOPT) $(PDBFLAG)
 
 main\repoinfo.obj: main\repoinfo.c main\repoinfo.h
 
-peg\varlink.c peg\varlink.h: peg\varlink.peg $(PACKCC)
-peg\kotlin.c peg\kotlin.h: peg\kotlin.peg $(PACKCC)
+include win32/peg_rule.mak
 
 $(RES_OBJ): win32/ctags.rc win32/ctags.exe.manifest win32/resource.h
 	$(RC) /nologo /l 0x409 /Fo$@ $*.rc
@@ -112,7 +114,7 @@ copy_gnulib_heads:
 	copy win32\gnulib_h\fnmatch.h gnulib
 
 clean:
-	- del *.obj main\*.obj optlib\*.obj parsers\*.obj parsers\cxx\*.obj gnulib\*.obj misc\packcc\*.obj peg\*.obj extra-cmds\*.obj libreadtags\*.obj dsl/*.o win32\mkstemp\*.obj win32\*.res main\repoinfo.h
+	- del *.obj main\*.obj optlib\*.obj parsers\*.obj parsers\cxx\*.obj gnulib\*.obj misc\packcc\*.obj peg\*.obj extra-cmds\*.obj libreadtags\*.obj dsl\*.obj win32\mkstemp\*.obj win32\*.res main\repoinfo.h
 	- del ctags.exe readtags.exe optscript.exe $(PACKCC)
 	- del tags
 	- del config.h gnulib\langinfo.h gnulib\fnmatch.h gnulib\*.obj gnulib\malloc\*.obj

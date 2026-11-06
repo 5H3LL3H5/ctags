@@ -7,8 +7,9 @@
 */
 
 #include "general.h"  /* must always come first */
-#include "tcl.h"
+#include "x-tcl.h"
 #include "entry.h"
+#include "param.h"
 #include "parse.h"
 #include "read.h"
 #include "keyword.h"
@@ -18,7 +19,6 @@
 
 struct itclSubparser {
 	tclSubparser tcl;
-	bool foundITclPackageRequired;
 	bool foundITclNamespaceImported;
 };
 
@@ -42,7 +42,7 @@ static kindDefinition ITclKinds[] = {
 	  ATTACH_SEPARATORS(ITclGenericSeparators)},
 	{ true, 'C', "common", "common variables",
 	  ATTACH_SEPARATORS(ITclGenericSeparators)},
-	{ true, 'p', "procedure", "procedures within the  class  namespace",
+	{ true, 'p', "procedure", "procedures within the class namespace",
 	  ATTACH_SEPARATORS(ITclGenericSeparators)},
 };
 
@@ -71,6 +71,8 @@ static const keywordTable ITclKeywordTable[] = {
 	{ "proc",			KEYWORD_PROC		},
 };
 
+static bool itclForceUse;
+
 static keywordId resolveKeyword (vString *string)
 {
 	char *s = vStringValue (string);
@@ -89,11 +91,7 @@ static void parseInherit (tokenInfo *token, int r)
 	do {
 		tokenRead (token);
 		if (tokenIsType (token, TCL_IDENTIFIER))
-		{
-			if (vStringLength(inherits) != 0)
-				vStringPut (inherits, ',');
-			vStringCat(inherits, token->string);
-		}
+			vStringJoin(inherits, ',', token->string);
 		else if (tokenIsType(token, TCL_EOL))
 			break;
 		else
@@ -148,9 +146,7 @@ static void parseSubobject (tokenInfo *token, int parent, enum ITclKind kind, ke
 	}
 
 	skipToEndOfTclCmdline (token);
-	tagEntryInfo *e = getEntryInCorkQueue (r);
-	if (e)
-		e->extensionFields.endLine = token->lineNumber;
+	setTagEndLineToCorkEntry (r, token->lineNumber);
 }
 
 
@@ -256,23 +252,12 @@ static int commandNotify (tclSubparser *s, char *command,
 	struct itclSubparser *itcl = (struct itclSubparser *)s;
 	int r = CORK_NIL;
 
-	if (!itcl->foundITclPackageRequired)
-		return r;
-
 	if ((itcl->foundITclNamespaceImported
 		 && (strcmp (command, "class") == 0))
 		|| (strcmp (command, "itcl::class") == 0))
 		r = parseClass (s, parentIndex, pstate);
 
 	return r;
-}
-
-static void packageRequirementNotify (tclSubparser *s, char *package,
-									  void *pstate CTAGS_ATTR_UNUSED)
-{
-	struct itclSubparser *itcl = (struct itclSubparser *)s;
-	if (strcmp (package, "Itcl") == 0)
-		itcl->foundITclPackageRequired = true;
 }
 
 static void namespaceImportNotify (tclSubparser *s, char *namespace,
@@ -289,18 +274,16 @@ static void inputStart (subparser *s)
 {
 	struct itclSubparser *itcl = (struct itclSubparser *)s;
 
-	itcl->foundITclPackageRequired = false;
-	itcl->foundITclNamespaceImported = false;
+	itcl->foundITclNamespaceImported = itclForceUse;
 }
 
-struct itclSubparser itclSubparser = {
+static struct itclSubparser itclSubparser = {
 	.tcl = {
 		.subparser = {
 			.direction = SUBPARSER_BI_DIRECTION,
 			.inputStart = inputStart,
 		},
 		.commandNotify = commandNotify,
-		.packageRequirementNotify = packageRequirementNotify,
 		.namespaceImportNotify = namespaceImportNotify,
 	},
 };
@@ -309,6 +292,20 @@ static void findITclTags(void)
 {
 	scheduleRunningBaseparser (RUN_DEFAULT_SUBPARSERS);
 }
+
+static bool itclForceUseParamHandler (const langType language CTAGS_ATTR_UNUSED,
+									  const char *name, const char *arg)
+{
+	itclForceUse = paramParserBool (arg, itclForceUse, name, "parameter");
+	return true;
+}
+
+static paramDefinition ItclParams [] = {
+	{ .name = "forceUse",
+	  .desc = "enable the parser even when `itcl' namespace is not specified in the input (true or [false])" ,
+	  .handleParam = itclForceUseParamHandler,
+	},
+};
 
 extern parserDefinition* ITclParser (void)
 {
@@ -332,6 +329,9 @@ extern parserDefinition* ITclParser (void)
 
 	def->keywordTable = ITclKeywordTable;
 	def->keywordCount = ARRAY_SIZE (ITclKeywordTable);
+
+	def->paramTable = ItclParams;
+	def->paramCount = ARRAY_SIZE(ItclParams);
 
 	return def;
 }

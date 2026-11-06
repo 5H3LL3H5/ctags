@@ -232,6 +232,8 @@ Related options
 
 	--list-fields
 
+	--_paramdef-<LANG>=<NAME>,<DESCRIPTION>
+
 You can run optscript code fragments when pattern specified with
 options matches successfully. The options are ``--regex-<LANG>``,
 ``--mline-regex-<LANG>``, and ``--_mtable-regex-<LANG>`` as you
@@ -250,14 +252,67 @@ Instead, you should write them to a .ctags file.
   marker ``}}`` must be at the beginning of line. If you break the
   rule, the optlib loader of ctags fails to read your file.
 
-``--_prelude-<LANG>`` is for specified code fragments run at the
+``--_prelude-<LANG>`` is for specified code fragments running at the
 beginning of parsing a source file. You can use this option for
 defining the common code used in the parser.
 
-``--_sequel-<LANG>`` is for for specified code fragments run at the end
-of parser a source file. You can use this option for debug-printing
-the final state of parsing the source file.
-e.g. ``--_sequel-Foo={{ _traced { pstack } if }}``.
+``--_sequel-<LANG>`` is for for specified code fragments running at the end
+of parser a source file. Other than clean-up operations, the typical
+use case of this option is for filling ``end:`` field of the tags
+ctags found at the end of the input file.
+
+Consider the following input, written in a Python-like pseudocode:
+.. code-blcok::
+
+	...
+	def fun(args)
+		...
+	EOF
+
+You can make a tag with ``--regex-PseudoLang=/^def[ \t]+([a-f]+)/\1/d/``.
+However, there was no way to fill the ``end:`` field of ``f``.
+Here ``--_sequel-<LANG>`` option comes in. ctas runs the code fragment
+specified with the option after reaching the end of input.
+
+.. code-block:: ctags
+
+	--langdef=PseudoLang
+	--map-PseudoLang=.ppp
+	--kinddef-PseudoLang=d,def,definitions
+	--regex-PseudoLang=/^def[ \t]+([a-f]+)/\1/d/{{
+		% New definition
+		% Let's fill end: field of the tags on the stack
+		count 0 gt {
+			% Push the the line number (currentLine) of the tag (currentTag)
+			% just extracted.
+			. :line
+			% The last tag extracted before extracting currentTag ends
+			% at currentLine - 1.  (lastLine)
+			1 sub
+			% Fill the end: field with the lastLine.
+			end:
+		} if
+		% push the currentTag
+		.
+		% Unless more `def` is found, we have no chance to fill
+		% the end: field of the currentTag. but ...
+	}}
+	--_sequel-PseudoLang={{
+		% this option gives the chance to fill the field.
+		count 0 gt {
+			. :line end:
+		} if
+	}}
+
+``.`` in ``--_sequel-<LANG>`` code fragment is a placeholder tag.
+ctags makes the placeholder tag when executing the code fragment
+implicitly. The placeholder tag is only for providing the line number
+of the end of input file. You can get the line number with
+``. :line``.
+
+You can also use this option for debug-printing the final state of
+parsing the source file.  e.g. ``--_sequel-Foo={{ _traced { pstack }
+if }}``.
 
 ``--_list-operators`` lists all operators (and built-in procedures)
 and exits. In additions to operators defined in  ``optscript``,
@@ -269,12 +324,18 @@ represents the field has an operator for reading
 (``:fieldname``). ``w`` represents the field has an operator for
 writing (``fieldname:``).
 
+``--_paramdef-<LANG>=<NAME>,<DESCRIPTION>`` defines a language specific
+parameter named  ``<NAME>``. ``--param-<LANG>.<NAME>=<VALUE>`` assigns
+a value ``<VALUE>`` to the parameter. You can access the value from
+Optscript code with ``_param`` operator. Don't use ``{`` character
+in the description. The character is reserved for future extension.
+
 Operators
 ............................
 
 **.** -> ``-`` **.** ``corkIndex:int``
 
-    Push the cork index for the tag
+    Push the cork index for the tag.
 
 **\\n** -> ``-`` **\\n** ``matchedString:string``
 
@@ -324,7 +385,45 @@ Data types
 Recipes
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-TBW
+Parameters
+...........................................
+With ``--_paramdef-<LANG>=<param>,<description>`` option, you can
+define a parser-specific parameter to your optlib parser.
+
+In the following example, we define a parser, ``Foo`` with a
+parser-specific parameter ``VAR``. If the parser sees "x" in the
+current input stream, a code fragment attached to the pattern "/(x)/"
+runs. The code fragment does (1) check whether a value for ``VAR`` is
+given, (2) emit a tag with the value given to parameter ``VAR`` as
+name and with ``xval`` kind, and (3) remove the cork index from the
+operand stack.
+
+foo.ctags:
+.. code-block::
+
+	--langdef=Foo
+	--map-Foo=.foo
+	--kinddef-Foo=v,xval,externally defined values
+	--_paramdef-Foo=VAR,desc
+	--regex-Foo=/(x)//{{
+		/VAR _param { % if VAR is defined ....
+			/xval _tag _commit pop
+		} if
+		% if VAR is not defined, we do nothing.
+	}}
+
+input.foo:
+.. code-block::
+
+	x
+
+When running the parser, we can give a value ("hereiam" in the following example)
+for the parameter ``VAR`` from the command line:
+
+.. code-block:: console
+
+	$ ./ctags --options=args.ctags --param-Foo.VAR=hereiam -o - input.foo
+	hereiam	input.foo	/^x$/;"	v
 
 Difference between Optscript and PostScript
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

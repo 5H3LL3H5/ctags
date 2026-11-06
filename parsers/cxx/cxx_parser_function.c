@@ -14,10 +14,11 @@
 #include "cxx_token.h"
 #include "cxx_token_chain.h"
 #include "cxx_scope.h"
+#include "cxx_side_chain.h"
 
 #include "parse.h"
 #include "vstring.h"
-#include "../cpreprocessor.h"
+#include "../x-cpreprocessor.h"
 #include "debug.h"
 #include "keyword.h"
 #include "read.h"
@@ -280,9 +281,11 @@ int cxxParserMaybeParseKnRStyleFunctionDefinition(void)
 	tagEntryInfo * tag = cxxTagBegin(CXXTagKindFUNCTION,pIdentifier);
 
 	int iCorkQueueIndex = CORK_NIL;
+	int iCorkQueueIndexFQ = CORK_NIL;
 
 	if(tag)
 	{
+		cxxSideChainScan(pIdentifier->pSideChain);
 		if(pParenthesis->pChain->pTail)
 		{
 			// normalize signature
@@ -291,6 +294,7 @@ int cxxParserMaybeParseKnRStyleFunctionDefinition(void)
 			pParenthesis->pChain->pTail->bFollowedBySpace = false;
 		}
 
+		// We don't have to consider export'ed status here; the input is written in C!
 		tag->isFileScope = (g_cxx.uKeywordState & CXXParserKeywordStateSeenStatic) &&
 				!isInputHeaderFile();
 
@@ -302,7 +306,8 @@ int cxxParserMaybeParseKnRStyleFunctionDefinition(void)
 		if(pszSignature)
 			tag->extensionFields.signature = vStringValue(pszSignature);
 
-		iCorkQueueIndex = cxxTagCommit();
+		iCorkQueueIndex = cxxTagCommit(&iCorkQueueIndexFQ);
+		cxxTagUseTokenAsPartOfDefTag(iCorkQueueIndex, pIdentifier);
 
 		if(pszSignature)
 			vStringDelete(pszSignature);
@@ -315,6 +320,7 @@ int cxxParserMaybeParseKnRStyleFunctionDefinition(void)
 			vStringValue(pIdentifier->pszWord)
 		);
 
+	// We don't have to propagate export'ed status; the input is written in C!
 	cxxScopePush(pIdentifier,CXXScopeTypeFunction,CXXScopeAccessUnknown);
 
 	// emit parameters
@@ -348,7 +354,11 @@ int cxxParserMaybeParseKnRStyleFunctionDefinition(void)
 	}
 
 	if(iCorkQueueIndex > CORK_NIL)
+	{
 		cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndex);
+		if(iCorkQueueIndexFQ > CORK_NIL)
+			cxxParserMarkEndLineForTagInCorkQueue(iCorkQueueIndexFQ);
+	}
 
 	cxxScopePop();
 	return 1;
@@ -631,6 +641,77 @@ static bool cxxParserLookForFunctionSignatureCheckParenthesisAndIdentifier(
 
 	CXX_DEBUG_LEAVE_TEXT("Doesn't look like a valid parenthesis chain");
 	return false;
+}
+
+// If pInfo->pIdentifierStart has the same name as the name of
+// class|enum|union|struct scope, we consider pInfo->pIdentifierStart
+// points a constructor.
+static bool cxxParserisConstructor(const char *szFuncname)
+{
+	if (cxxScopeIsGlobal())
+		return false;
+
+	switch (cxxScopeGetType())
+	{
+	case CXXScopeTypeClass:
+	case CXXScopeTypeEnum:
+	case CXXScopeTypeUnion:
+	case CXXScopeTypeStruct:
+		break;
+	default:
+		return false;
+	}
+
+	const char *szScope = cxxScopeGetName();
+	const char *szTmp = strrstr (szScope, szFuncname);
+
+	if (szTmp == NULL)
+		return false;
+
+	/* szFuncname == "C", szScope == "C" */
+	if (szTmp == szScope)
+		return true;
+
+	/* szFuncname == "C", szScope == "X::C" */
+	if (szTmp[-1] == ':')
+		return true;
+
+	return false;
+}
+
+static CXXTokenChain * cxxParserLookForFunctionNameOnlyInParenthesis(CXXTokenChain * pChain)
+{
+	if (pChain->iCount == 3) {
+		CXXToken *pToken = cxxTokenChainAt(pChain,1);
+
+		// It rejects void keyword implicitly to examine the token is an Identifier.
+		if (cxxTokenTypeIs(pToken, CXXTokenTypeIdentifier))
+			return pChain;
+		if (cxxTokenTypeIs(pToken, CXXTokenTypeParenthesisChain))
+			return cxxParserLookForFunctionNameOnlyInParenthesis(pToken->pChain);
+	} else if (pChain->iCount > 3) {
+		CXXToken *pBegin = cxxTokenChainAt(pChain,1);
+		CXXToken *pTmp = pBegin;
+		while (pTmp)
+		{
+			if (!cxxTokenTypeIsOneOf(pTmp,
+									CXXTokenTypeIdentifier | CXXTokenTypeMultipleColons))
+				break;
+			pTmp = pTmp->pNext;
+		}
+		if (pChain->pTail == pTmp)
+			return pChain;
+	}
+	return NULL;
+}
+
+static CXXTokenChain * cxxParserLookForFunctionNameInParenthesisFollowedByParameterList(CXXToken * pParenthesis)
+{
+	CXXToken *pNext = pParenthesis->pNext;
+
+	if (pNext && cxxTokenTypeIs(pNext, CXXTokenTypeParenthesisChain))
+		return cxxParserLookForFunctionNameOnlyInParenthesis(pParenthesis->pChain);
+	return NULL;
 }
 
 //
@@ -939,6 +1020,60 @@ bool cxxParserLookForFunctionSignature(
 			goto next_token;
 		}
 
+		// Before considering macros, here we examine (FUNC)(ARGS) sequence like:
+		//
+		//   myType (myFunc0)(args...);
+		//   myType ((myFunc1)(args...);
+		//   myType (myNs::myFunc2)(args...);
+		//
+		{
+			CXXTokenChain * pFnameInParenthesis =
+				cxxParserLookForFunctionNameInParenthesisFollowedByParameterList(pToken);
+
+			if (pFnameInParenthesis)
+			{
+				// If the current pToken is at the head of pChain, the following
+				// code chaining the pChain destructive way doesn't work. */
+				Assert(pChain->pHead != pToken);
+
+				int iChainLen = pFnameInParenthesis->iCount;
+				//       v----------- pFnameHead
+				// type (ns:f)(...)
+				//      ^   ^-------- pFnameTail
+				//       `----------- pToken, pFnameInParenthesis
+				//
+				CXXToken * pFnameHead = pFnameInParenthesis->pHead->pNext;
+				CXXToken * pFnameTail = pFnameInParenthesis->pTail->pPrev;
+
+				// Remove the name of function including namespace specifier
+				// from the pFnameInParenthesis; only `(' and `)' remain
+				// in the chain.
+				pFnameInParenthesis->pHead->pNext = pFnameInParenthesis->pTail;
+				pFnameInParenthesis->pTail->pPrev = pFnameInParenthesis->pHead;
+				pFnameInParenthesis->iCount = 2;
+
+				// Remove the parenthesis like:
+				//
+				//   type (ns::f)(...) => type ns::f(...)
+				//
+				cxxTokenReplaceWithTokens(pToken, pFnameHead, pFnameTail);
+				Assert(pFnameHead->pPrev);
+				cxxTokenDestroy(pToken);
+				// And adjust the chain length.
+				pChain->iCount += (iChainLen - 3);
+
+				// Restart the process from the name of function:
+				//   v----------------pToken
+				//   type ns::f(...)
+				//        ^-----------pFnameHead
+				//
+				pToken = pFnameHead->pPrev;
+
+				CXX_DEBUG_PRINT("Found a function name in parenthesis followed by parameter list");
+				goto next_token;
+			}
+		}
+
 		CXX_DEBUG_PRINT("Found interesting parenthesis chain: check for identifier");
 
 		// parentheses at position 1 they are likely to be macro invocations...
@@ -1017,9 +1152,6 @@ bool cxxParserLookForFunctionSignature(
 		if(
 				// The previous token is >
 				cxxTokenTypeIs(pToken->pPrev,CXXTokenTypeGreaterThanSign) &&
-				// We extracted an initial template<*> token chain
-				// (which has been removed from the currently examined chain)
-				g_cxx.pTemplateTokenChain &&
 				// We skipped an additional <...> block in *this* chain
 				bSkippedAngleBrackets
 			)
@@ -1034,7 +1166,17 @@ bool cxxParserLookForFunctionSignature(
 			if(
 					pSpecBegin &&
 					pSpecBegin->pPrev &&
-					cxxTokenTypeIs(pSpecBegin->pPrev,CXXTokenTypeIdentifier)
+					cxxTokenTypeIs(pSpecBegin->pPrev,CXXTokenTypeIdentifier) &&
+					(
+						// We extracted an initial template<*> token chain
+						// (which has been removed from the currently examined chain)
+						g_cxx.pTemplateTokenChain ||
+						// g_cxx.pTemplateTokenChain is set to null if "{" after "class" keyword
+						// is found. As a result, a constructor with <*> defined in a template
+						// class could not be tagged. The next additional condition is for
+						// tagging the condition in this situation.
+						cxxParserisConstructor(vStringValue(pSpecBegin->pPrev->pszWord))
+					)
 				)
 			{
 				// template specialisation
@@ -1058,7 +1200,7 @@ bool cxxParserLookForFunctionSignature(
 							pParamInfo
 						)
 					)
-						goto next_token;
+					goto next_token;
 
 			}
 
@@ -1208,7 +1350,7 @@ next_token:
 					// hmm.. probably a template specialisation
 					pAux = pSmallerThan->pPrev;
 					pInfo->uFlags |= CXXFunctionSignatureInfoScopeTemplateSpecialization;
-				} else if(pAux->eType == CXXTokenTypeAngleBracketChain)
+				} else if(cxxTokenTypeIs(pAux, CXXTokenTypeAngleBracketChain))
 				{
 					// same as above, but already condensed (though it should never happen)
 					if(!pAux->pPrev)
@@ -1407,7 +1549,8 @@ int cxxParserEmitFunctionTags(
 		CXXFunctionSignatureInfo * pInfo,
 		unsigned int uTagKind,
 		unsigned int uOptions,
-		int * piCorkQueueIndex
+		int * piCorkQueueIndex,
+		int * piCorkQueueIndexFQ
 	)
 {
 	CXX_DEBUG_ENTER();
@@ -1416,6 +1559,8 @@ int cxxParserEmitFunctionTags(
 
 	if(piCorkQueueIndex)
 		*piCorkQueueIndex = CORK_NIL;
+	if(piCorkQueueIndexFQ)
+		*piCorkQueueIndexFQ = CORK_NIL;
 
 	enum CXXScopeType eOuterScopeType = cxxScopeGetType();
 
@@ -1446,10 +1591,37 @@ int cxxParserEmitFunctionTags(
 			{
 				CXXToken * pScopeId = pInfo->pScopeStart;
 
-				pInfo->pScopeStart = cxxTokenChainNextTokenOfType(
+				while (1)
+				{
+					pInfo->pScopeStart = cxxTokenChainNextTokenOfType(
 						pInfo->pScopeStart,
-						CXXTokenTypeMultipleColons
-					);
+						CXXTokenTypeMultipleColons|CXXTokenTypeSmallerThanSign);
+
+					CXX_DEBUG_ASSERT(pInfo->pScopeStart,
+									 "We could find neither '::' nor '<'");
+					if (!pInfo->pScopeStart)
+					{
+						pInfo->pScopeStart = pInfo->pIdentifierStart;
+						break;
+					}
+
+					if (cxxTokenTypeIs(pInfo->pScopeStart, CXXTokenTypeMultipleColons))
+						break;	// Good!
+
+					if (cxxTokenTypeIs(pInfo->pScopeStart, CXXTokenTypeSmallerThanSign))
+					{
+						// Skip the template arguments.
+						// Should we add the template arguments to the scope? (FIXME)
+						pInfo->pScopeStart = cxxTokenChainSkipToEndOfTemplateAngleBracket(pInfo->pScopeStart);
+						CXX_DEBUG_ASSERT(pInfo->pScopeStart,
+										 "We could not find '>', the end of template argument(s)");
+						if (!pInfo->pScopeStart)
+						{
+							pInfo->pScopeStart = pInfo->pIdentifierStart;
+							break;
+						}
+					}
+				}
 
 				CXX_DEBUG_ASSERT(pInfo->pScopeStart,"We should have found a next token here");
 
@@ -1491,6 +1663,7 @@ int cxxParserEmitFunctionTags(
 			0
 		);
 
+	cxxSideChainCollectInRange(pInfo->pIdentifierStart,pInfo->pIdentifierEnd,pIdentifier);
 	cxxTokenChainDestroyRange(pInfo->pIdentifierChain,pInfo->pIdentifierStart,pInfo->pIdentifierEnd);
 
 	CXX_DEBUG_ASSERT(
@@ -1520,7 +1693,7 @@ int cxxParserEmitFunctionTags(
 		//   inline friend void y(){ ... }
 		//  }
 		//
-		// Here y() is implicitly defined as a function in the namespace contaning X
+		// Here y() is implicitly defined as a function in the namespace containing X
 		// (so it is NOT X::y()).
 
 		pSavedScope = cxxScopeTakeTop();
@@ -1571,6 +1744,11 @@ int cxxParserEmitFunctionTags(
 				tag->isFileScope = !isInputHeaderFile();
 			}
 		}
+		// Overwrite the assigned value if the language object is export'ed.
+		tag->isFileScope = ((g_cxx.uKeywordState & CXXParserKeywordStateSeenExport)
+							|| cxxScopeIsExported())
+			? 0
+			: tag->isFileScope;
 
 		vString * pszSignature = cxxTokenChainJoin(pInfo->pParenthesis->pChain,NULL,0);
 		if(pInfo->pSignatureConst)
@@ -1601,6 +1779,7 @@ int cxxParserEmitFunctionTags(
 					CXXToken * pTokenBeforeParenthesis = pInfo->pParenthesis->pPrev;
 					cxxTokenChainTake(pInfo->pParenthesisContainerChain,pInfo->pParenthesis);
 
+					cxxSideChainCollectInRange(pInfo->pTypeStart,pInfo->pTypeEnd, pIdentifier);
 					pTypeName = cxxTagCheckAndSetTypeField(pInfo->pTypeStart,pInfo->pTypeEnd);
 
 					cxxTokenChainInsertAfter(
@@ -1612,6 +1791,7 @@ int cxxParserEmitFunctionTags(
 					pTypeName = NULL;
 				}
 			} else {
+				cxxSideChainCollectInRange(pInfo->pTypeStart,pInfo->pTypeEnd, pIdentifier);
 				pTypeName = cxxTagCheckAndSetTypeField(pInfo->pTypeStart,pInfo->pTypeEnd);
 			}
 		} else {
@@ -1678,6 +1858,11 @@ int cxxParserEmitFunctionTags(
 				uProperties |= CXXTagPropertyExtern;
 			if(g_cxx.uKeywordState & CXXParserKeywordStateSeenAttributeDeprecated)
 				uProperties |= CXXTagPropertyDeprecated;
+			if(g_cxx.uKeywordState & CXXParserKeywordStateSeenConstexpr)
+				uProperties |= CXXTagPropertyConstexpr;
+			if(g_cxx.uKeywordState & CXXParserKeywordStateSeenConsteval)
+				uProperties |= CXXTagPropertyConsteval;
+			// constinit is not here; it is for variables.
 			if(pInfo->pSignatureConst)
 				uProperties |= CXXTagPropertyConst;
 			if(pInfo->uFlags & CXXFunctionSignatureInfoPure)
@@ -1699,11 +1884,16 @@ int cxxParserEmitFunctionTags(
 								CXXTagPropertyTemplateSpecialization;
 			if((pInfo->uFlags & CXXFunctionSignatureInfoTemplateSpecialization) || bIsEmptyTemplate)
 				uProperties |= CXXTagPropertyTemplateSpecialization;
+			if(g_cxx.uKeywordState & CXXParserKeywordStateSeenExport)
+				uProperties |= CXXTagPropertyExport;
 
 			pszProperties = cxxTagSetProperties(uProperties);
 		}
 
-		int iCorkQueueIndex = cxxTagCommit();
+		cxxSideChainScan(pIdentifier->pSideChain);
+
+		int iCorkQueueIndex = cxxTagCommit(piCorkQueueIndexFQ);
+		cxxTagUseTokenAsPartOfDefTag(iCorkQueueIndex, pIdentifier);
 
 		if(piCorkQueueIndex)
 			*piCorkQueueIndex = iCorkQueueIndex;
@@ -1765,7 +1955,8 @@ int cxxParserEmitFunctionTags(
 //
 int cxxParserExtractFunctionSignatureBeforeOpeningBracket(
 		CXXFunctionSignatureInfo * pInfo,
-		int * piCorkQueueIndex
+		int * piCorkQueueIndex,
+		int * piCorkQueueIndexFQ
 	)
 {
 	CXX_DEBUG_ENTER();
@@ -1805,7 +1996,8 @@ int cxxParserExtractFunctionSignatureBeforeOpeningBracket(
 			pInfo,
 			CXXTagKindFUNCTION,
 			CXXEmitFunctionTagsPushScopes,
-			piCorkQueueIndex
+			piCorkQueueIndex,
+			piCorkQueueIndexFQ
 		);
 
 	if(bParams)
@@ -1874,10 +2066,12 @@ void cxxParserEmitFunctionParameterTags(CXXTypedVariableSet * pInfo)
 		if (pInfo->uAnonymous & (0x1u << i))
 			markTagExtraBit(tag, XTAG_ANONYMOUS);
 
-		cxxTagCommit();
+		cxxTagCommit(NULL);
 
 		if(pTypeName)
 		{
+			if (pInfo->uAnonymous & (0x1u << i))
+				PARSER_TRASH_BOX_TAKE_BACK (pInfo->aIdentifiers[i]);
 			cxxTokenDestroy(pInfo->aIdentifiers[i]);
 			cxxTokenDestroy(pTypeName);
 		}
@@ -1895,7 +2089,7 @@ void cxxParserEmitFunctionParameterTags(CXXTypedVariableSet * pInfo)
 // and such.
 //
 // If pParamInfo is non NULL then the function will also gather
-// informations about the parameters and store them.
+// information about the parameters and store them.
 //
 bool cxxParserTokenChainLooksLikeFunctionParameterList(
 		CXXTokenChain * tc,
@@ -1928,7 +2122,7 @@ bool cxxParserTokenChainLooksLikeFunctionParameterList(
 
 	CXXToken * t = cxxTokenChainAt(tc,1);
 
-	bool bIsCPP = cxxParserCurrentLanguageIsCPP();
+	bool bIsC = ! (cxxParserCurrentLanguageIsCPP() || cxxParserCurrentLanguageIsCUDA());
 
 	for(;;)
 	{
@@ -2165,10 +2359,11 @@ try_again:
 						 *
 						 *   void f(int *);
 						 */
-						pIdentifier = cxxTokenCreateAnonymousIdentifier(CXXTagKindPARAMETER);
+						pIdentifier = cxxTokenCreateAnonymousIdentifier(CXXTagKindPARAMETER, NULL);
 						pIdentifier->iLineNumber = t->pPrev->iLineNumber;
 						pIdentifier->oFilePosition = t->pPrev->oFilePosition;
 						pParamInfo->uAnonymous |= (0x1u << pParamInfo->uCount);
+						PARSER_TRASH_BOX (pIdentifier, cxxTokenDestroy);
 					}
 					pParamInfo->aIdentifiers[pParamInfo->uCount] = pIdentifier;
 					pParamInfo->uCount++;
@@ -2208,7 +2403,7 @@ try_again:
 			 *
 			 */
 			CXXToken * pFakeStart = cxxTokenCopy(pStart);
-			CXXToken * pFakeId = cxxTokenCreateAnonymousIdentifier(CXXTagKindPARAMETER);
+			CXXToken * pFakeId = cxxTokenCreateAnonymousIdentifier(CXXTagKindPARAMETER, NULL);
 			pFakeId->iLineNumber = pStart->iLineNumber;
 			pFakeId->oFilePosition = pStart->oFilePosition;
 
@@ -2222,7 +2417,7 @@ try_again:
 			pParamInfo->uCount++;
 
 			PARSER_TRASH_BOX (pFakeStart, cxxTokenDestroy);
-			/* pFakeId may be destroyed via pParamInfo->aIdentifiers[i]. */
+			PARSER_TRASH_BOX (pFakeId, cxxTokenDestroy);
 		}
 
 		if(cxxTokenTypeIs(t,CXXTokenTypeClosingParenthesis))
@@ -2240,7 +2435,7 @@ try_again:
 		}
 
 		// assignment.
-		if(!bIsCPP)
+		if(bIsC)
 		{
 			CXX_DEBUG_LEAVE_TEXT(
 					"Found assignment, this doesn't look like valid C function parameter list"

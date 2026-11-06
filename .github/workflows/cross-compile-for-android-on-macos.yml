@@ -1,0 +1,48 @@
+name: cross compile for Android on macOS
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  cross-compile:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-26]
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - run: brew install make automake autoconf
+
+      - run: ./autogen.sh
+
+      - name: setup Android NDK build environment
+        run: |
+          TOOLCHAIN_BASE_DIR=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/darwin-x86_64
+          TOOLCHAIN_BIN_DIR=$TOOLCHAIN_BASE_DIR/bin
+          SYSROOT=$TOOLCHAIN_BASE_DIR/sysroot
+
+          cat >> "$GITHUB_ENV" <<EOF
+          CC=$TOOLCHAIN_BIN_DIR/aarch64-linux-android24-clang
+          AR=$TOOLCHAIN_BIN_DIR/llvm-ar
+          RANLIB=$TOOLCHAIN_BIN_DIR/llvm-ranlib
+          READELF=$TOOLCHAIN_BIN_DIR/llvm-readelf
+          CFLAGS=--sysroot $SYSROOT -Qunused-arguments -Os -fpic
+          CPPFLAGS=--sysroot $SYSROOT -Qunused-arguments
+          LDFLAGS=--sysroot $SYSROOT
+          EOF
+
+      - run: ./configure --host=aarch64-linux-android --disable-iconv --disable-xml --disable-json --disable-yaml --disable-pcre2
+
+      - run: make V=1
+
+      - run: ${{ env.READELF }} -h ctags
+
+      # https://www.sco.com/developers/gabi/latest/ch4.eheader.html
+      - run: test "$(hexdump -n 20 -e '20/1 "%02X" "\n"' ctags)" = '7F454C460201010000000000000000000300B700'

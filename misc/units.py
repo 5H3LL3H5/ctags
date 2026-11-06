@@ -232,6 +232,7 @@ def decorate(decorator, msg, colorized):
 def run_result(result_type, msg, output, *args, file=sys.stdout):
     func_dict = {
             'skip': run_result_skip,
+            'internal-error': run_result_internal_error,
             'error': run_result_error,
             'ok': run_result_ok,
             'known_error': run_result_known_error,
@@ -245,6 +246,12 @@ def run_result(result_type, msg, output, *args, file=sys.stdout):
 
 def run_result_skip(msg, f, colorized, *args):
     s = msg + decorate('yellow', 'skipped', colorized)
+    if len(args) > 0:
+        s += ' (' + args[0] + ')'
+    print(s, file=f)
+
+def run_result_internal_error(msg, f, colorized, *args):
+    s = msg + decorate('red', 'INTERNAL-ERROR', colorized)
     if len(args) > 0:
         s += ' (' + args[0] + ')'
     print(s, file=f)
@@ -281,8 +288,8 @@ def run_shrink(cmdline_template, finput, foutput, lang):
 # otherwise return a list of command line arguments.
 def basename_filter(internal, output_type):
     filters_external = {
-            'ctags': 's%\(^[^\t]\{1,\}\t\)\(/\{0,1\}\([^/\t]\{1,\}/\)*\)%\\1%',
-            # "input" in the expresion is for finding input file names in the TAGS file.
+            'ctags': r's%\(^[^\t]\{1,\}\t\)\(/\{0,1\}\([^/\t]\{1,\}/\)*\)%\\1%',
+            # "input" in the expression is for finding input file names in the TAGS file.
             # RAWOUT.tmp:
             #
             #   ./Units/parser-ada.r/ada-etags-suffix.d/input_0.adb,238
@@ -300,9 +307,9 @@ def basename_filter(internal, output_type):
             #
             # FIXME: if "input" is included as a substring of tag entry names, filtering
             # with this expression makes the test fail.
-            'etags': 's%.*\/\(input[-._][[:print:]]\{1,\}\),\([0-9]\{1,\}$\)%\\1,\\2%',
-            'xref': 's%\(.*[[:digit:]]\{1,\} \)\([^ ]\{1,\}[^ ]\{1,\}\)/\([^ ].\{1,\}.\{1,\}$\)%\\1\\3%',
-            'json': 's%\("path": \)"[^"]\{1,\}/\([^/"]\{1,\}\)"%\\1"\\2"%',
+            'etags': r's%.*\/\(input[-._][[:print:]]\{1,\}\),\([0-9]\{1,\}$\)%\\1,\\2%',
+            'xref': r's%\(.*[[:digit:]]\{1,\} \)\([^ ]\{1,\}[^ ]\{1,\}\)/\([^ ].\{1,\}.\{1,\}$\)%\\1\\3%',
+            'json': r's%\("path": \)"[^"]\{1,\}/\([^/"]\{1,\}\)"%\\1"\\2"%',
             }
     filters_internal = {
             'ctags': [r'(^[^\t]+\t)(/?([^/\t]+/)*)', r'\1'],
@@ -355,7 +362,7 @@ def prepare_bundles(frm, to, obundles):
 
 def anon_normalize_sub(internal, ctags, input_actual, *args):
     # TODO: "Units" should not be hardcoded.
-    input_expected = './Units' + re.sub(r'^.*?/Units', r'', input_actual, 1)
+    input_expected = './Units' + re.sub(r'^.*?/Units', r'', input_actual, count=1)
 
     ret = subprocess.run([CTAGS, '--quiet', '--options=NONE', '--_anonhash=' + input_actual],
             stdout=subprocess.PIPE)
@@ -464,7 +471,11 @@ def run_tcase(finput, t, name, tclass, category, build_t, extra_inputs):
         output_lang_extras = ' (multi inputs)'
 
     if not shutil.which(ffilter):
-        ffilter = 'cat'
+        if os.name == 'nt':
+            if not os.path.isfile(ffilter):
+                ffilter = 'cat'
+        else:
+            ffilter = 'cat'
 
     ostderr = o + '/' + _STDERR_OUTPUT_NAME
     orawout = o + '/RAWOUT.tmp'
@@ -519,7 +530,11 @@ def run_tcase(finput, t, name, tclass, category, build_t, extra_inputs):
     guessed_lang = None
     if len(LANGUAGES) > 0:
         guessed_lang = guess_lang(basecmdline, finput)
-        if not guessed_lang in LANGUAGES:
+        # If the args.ctags is broken, ctags cannot guess the language.
+        # In that case, we don't skip this test case.
+        # So we can raise an error.
+        if not broken_args_ctags \
+           and not guessed_lang in LANGUAGES:
             return False
 
     clean_tcase(o, obundles)
@@ -900,7 +915,8 @@ def action_run(parser, action, *args):
             help='run a test case with specified timeout in seconds. 0 means no timeout (default).')
     parser.add_argument('--with-valgrind', action='store_true', default=False,
             help='run a test case under valgrind')
-    parser.add_argument('--colorized-output', choices=['yes', 'no'], default='yes',
+    parser.add_argument('--colorized-output', choices=['yes', 'no'],
+            default='yes' if len(os.environ.get('NO_COLOR', "")) == 0 else 'no',
             help='print the result in color.')
     parser.add_argument('--run-shrink', action='store_true', default=False,
             help='(TODO: NOT IMPLEMENTED YET)')
@@ -1055,6 +1071,7 @@ def tmain_sub(test_name, basedir, subdir, build_subdir):
     global TMAIN_FAILED
 
     CODE_FOR_IGNORING_THIS_TMAIN_TEST = 77
+    CODE_FOR_INTERNAL_ERROR_THIS_TMAIN_TEST = 76
 
     os.makedirs(build_subdir, exist_ok=True)
 
@@ -1103,6 +1120,15 @@ def tmain_sub(test_name, basedir, subdir, build_subdir):
 
     if ret.returncode == CODE_FOR_IGNORING_THIS_TMAIN_TEST:
         run_result('skip', '', None, stdout.replace("\n", ''), file=strbuf)
+        print(strbuf.getvalue(), end='')
+        sys.stdout.flush()
+        strbuf.close()
+        return True
+    if ret.returncode == CODE_FOR_INTERNAL_ERROR_THIS_TMAIN_TEST:
+        internal_error_msg = stdout.replace("\n", '')
+        TMAIN_FAILED += [test_name + '/' + 'internal-error: ' + internal_error_msg]
+        TMAIN_STATUS = False
+        run_result('internal-error', '', None, internal_error_msg, file=strbuf)
         print(strbuf.getvalue(), end='')
         sys.stdout.flush()
         strbuf.close()
@@ -1267,7 +1293,7 @@ def prepare_environment():
     os.environ['MSYS2_ARG_CONV_EXCL'] = '--regex-;--_scopesep;--exclude;--exclude-exception'
 
     _PREPERE_ENV = """LC_ALL="C"; export LC_ALL
-MSYS2_ARG_CONV_EXCL='--regex-;--_scopesep;--exclude;--exclude-exception' export MSYS2_ARG_CONV_EXCL
+MSYS2_ARG_CONV_EXCL='--regex-;--_scopesep;--exclude;--exclude-exception'; export MSYS2_ARG_CONV_EXCL
 """
 
 # enable ANSI escape sequences on Windows 10 1511 (10.0.10586) or later

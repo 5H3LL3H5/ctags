@@ -10,13 +10,7 @@ READTAGS=$3
 #V="valgrind --leak-check=full -v"
 V=
 
-if ! [ -x "${READTAGS}" ]; then
-	skip "no readtags"
-fi
-
-if ! ( "${READTAGS}" -h | grep -q -e -S ); then
-	skip "no sorter function in readtags"
-fi
+skip_if_no_readtags "$READTAGS"
 
 ${READTAGS} -t output.tags -ne -S '(if (eq? $kind &kind)
     0

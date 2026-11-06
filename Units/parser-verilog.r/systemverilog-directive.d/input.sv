@@ -164,7 +164,7 @@ module test;
     `endif
 endmodule
 
-// orignal tests
+// original tests
 module ifdef_in_port (
     input logic a,
     `ifdef FOO// comment w/o white space
@@ -226,12 +226,13 @@ endmodule
 `define MY_DEFINE
 
 `define assert_clk(arg, __clk=clk, __rst_n=rst_n) \
- assert property (@(posedge __clk) disable iff (!__rst_n) arg) 
+ assert property (@(posedge __clk) disable iff (!__rst_n) arg)
 
 module forSkipMacro;
 `define add_t(f) f``_t
     var `add_t(foo) = '0;
 
+`define macro
     `macro({e},FOO)
     `macro("string",FOO)
     `macro(bar)

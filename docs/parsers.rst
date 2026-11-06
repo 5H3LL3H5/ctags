@@ -15,9 +15,11 @@ This section deals with individual parser topics.
 	parser-asm.rst
 	parser-cmake.rst
 	parser-cxx.rst
+	parser-gdscript.rst
 	parser-html.rst
 	parser-puppetManifest.rst
 	parser-python.rst
 	parser-tcl.rst
+	parser-v.rst
 	parser-vim.rst
 	parser-xslt.rst

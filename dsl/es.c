@@ -30,6 +30,7 @@
 #include <string.h>
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 
 #include <regex.h>
 
@@ -182,8 +183,8 @@ static EsSingleton* es_obarray_intern(EsType type, const char* name);
 static const char*  es_singleton_get   (EsSingleton *singleton);
 static unsigned int hash(const char* keyarg);
 #define OBARRAY_SIZE    83
-static EsSingleton  *symbol_obarray[OBARRAY_SIZE];
-static EsSingleton  *error_obarray [OBARRAY_SIZE];
+static EsSingleton *symbol_obarray[OBARRAY_SIZE];
+static EsSingleton *error_obarray [OBARRAY_SIZE];
 
 static EsObjectClass es_nil_class = {
 	.size    = 0,
@@ -294,7 +295,7 @@ static EsObjectClass *classes[ES_TYPE_CLASS_MAX] = {
 
 static MIO *mio_stdout (void)
 {
-	static MIO  *out;
+	static MIO *out;
 
 	if (out == NULL)
 		out = mio_new_fp (stdout, NULL);
@@ -304,7 +305,7 @@ static MIO *mio_stdout (void)
 
 static MIO *mio_stdin (void)
 {
-	static MIO  *out;
+	static MIO *out;
 
 	if (out == NULL)
 		out = mio_new_fp (stdin, NULL);
@@ -314,7 +315,7 @@ static MIO *mio_stdin (void)
 
 static MIO *mio_stderr (void)
 {
-	static MIO  *out;
+	static MIO *out;
 
 	if (out == NULL)
 		out = mio_new_fp (stderr, NULL);
@@ -822,7 +823,6 @@ es_symbol_print(const EsObject* object, MIO* fp)
 	unsigned char cc;
 	unsigned char mask;
 	int needs_bar;
-	int i;
 
 	string = es_symbol_get(object);
 	if (!string)
@@ -840,7 +840,7 @@ es_symbol_print(const EsObject* object, MIO* fp)
     {
 		/* 0 => 1? */
 		mask = 0x2;
-		for (i = 0; i< len; i++)
+		for (size_t i = 0; i< len; i++)
 		{
 			c = string[i];
 			cc = get_char_class(c);
@@ -854,7 +854,7 @@ es_symbol_print(const EsObject* object, MIO* fp)
 	if (needs_bar)
 		mio_printf(fp, "|");
 
-	for (i = 0; i < len; i++)
+	for (size_t i = 0; i < len; i++)
     {
 		c = string[i];
 		if (c == '\\' || c == '|')
@@ -1028,7 +1028,7 @@ es_string_print(const EsObject* object, MIO* fp)
 	const char* string;
 	char  c;
 	size_t len;
-	int      i;
+	size_t   i;
 
 
 	string = es_string_get(object);
@@ -1350,6 +1350,29 @@ es_regex_exec    (const EsObject* regex,
 {
 	return regexec (((EsRegex*)regex)->code, es_string_get (str),
 					0, NULL, 0)? es_false: es_true;
+}
+
+EsObject*
+es_regex_exec_extract_match_new (const EsObject* regex,
+								 const EsObject* str,
+								 unsigned int group)
+{
+	EsObject *r;
+	regmatch_t *pmatch = calloc(group + 1, sizeof(regmatch_t));
+	if (!pmatch)
+		return ES_ERROR_MEMORY;
+
+	const char *s = es_string_get (str);
+	if (regexec(((EsRegex*)regex)->code, s, group + 1, pmatch, 0))
+		r = es_false;
+	else
+		r = pmatch[group].rm_so == -1
+			? es_nil:
+			es_string_newL(s + pmatch[group].rm_so,
+						   pmatch[group].rm_eo - pmatch[group].rm_so);
+
+	free (pmatch);
+	return r;
 }
 
 /*
@@ -2108,7 +2131,7 @@ get_regex (MIO* fp)
 		return NULL;
 
 	/* Inject a placeholder representing
-	 * case-{in}sesitive. */
+	 * case-{in}sensitive. */
 	if (!token_append(t, ' '))
 		return NULL;
 
@@ -2167,7 +2190,7 @@ static void
 dump_token (MIO* stream, const char* prefix, Token* seed)
 {
 	const char* buf;
-	int i;
+	size_t i;
 	char  c;
 
 
@@ -2238,7 +2261,7 @@ get_sequence       (MIO* fp,
 				case 't': c0 = '\t'; break;
 				case 'r': c0 = '\r'; break;
 				case 'f': c0 = '\f'; break;
-				default:  c0 = c0  ; break;
+				default:  break;
 				}
 				seed = token_append(seed, c0);
 				in_escape = 0;
@@ -2562,8 +2585,8 @@ is_real      (const char* cstr,
 		return 0;
 	else if (*endptr != '\0')
 		return 0;
-
-	/* TODO: INF, NAN... */
+	else if (isinf(*d) || isnan(*d))
+		return 0;
 	return 1;
 }
 
@@ -2588,7 +2611,7 @@ es_read_from_string(const char* buf,
 	EsObject* o;
 
 
-	/* IN is opend in "r" mode and the stream pointed by
+	/* IN is opened in "r" mode and the stream pointed by
 	   IN is short-lived here. */
 	in = mio_new_memory((void *)buf, strlen(buf), NULL, NULL);
 	o = es_read(in);

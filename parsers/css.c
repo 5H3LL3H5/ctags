@@ -58,7 +58,7 @@ static void parseSelector (vString *const string, const int firstChar)
 	int c = firstChar;
 	do
 	{
-		vStringPut (string, (char) c);
+		vStringPut (string, c);
 		c = getcFromInputFile ();
 	} while (isSelectorChar (c));
 	ungetcToInputFile (c);
@@ -178,7 +178,7 @@ static void findCssTags (void)
 			{
 				readToken (&token);
 			}
-			/* HACK: we *eat* the opening '{' for medias and the like so that
+			/* HACK: we *eat* the opening '{' for media and the like so that
 			 *       the content is parsed as if it was at the root */
 			readNextToken = useContents && token.type == '{';
 		}
@@ -190,9 +190,7 @@ static void findCssTags (void)
 			vString *selector = vStringNew ();
 			do
 			{
-				if (vStringLength (selector) > 0)
-					vStringPut (selector, ' ');
-				vStringCat (selector, token.string);
+				vStringJoin (selector, ' ', token.string);
 
 				kind = classifySelector (token.string);
 				lineNumber = getInputLineNumber ();
@@ -227,8 +225,7 @@ static void findCssTags (void)
 				tagEntryInfo e;
 				initTagEntry (&e, vStringValue (selector), kind);
 
-				e.lineNumber	= lineNumber;
-				e.filePosition	= filePosition;
+				updateTagLine (&e, lineNumber, filePosition);
 
 				makeTagEntry (&e);
 			}

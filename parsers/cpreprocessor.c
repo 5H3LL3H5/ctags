@@ -18,13 +18,14 @@
 #include "debug.h"
 #include "entry.h"
 #include "htable.h"
-#include "cpreprocessor.h"
+#include "x-cpreprocessor.h"
 #include "kind.h"
 #include "options.h"
 #include "read.h"
 #include "vstring.h"
 #include "param.h"
 #include "parse.h"
+#include "promise.h"
 #include "xtag.h"
 
 #include "cxx/cxx_debug.h"
@@ -38,11 +39,45 @@
 /*
 *   DATA DECLARATIONS
 */
+enum eCppCharacters {
+	/* white space characters */
+	SPACE         = ' ',
+	NEWLINE       = '\n',
+	CRETURN       = '\r',
+	FORMFEED      = '\f',
+	TAB           = '\t',
+	VTAB          = '\v',
+
+	/* some hard to read characters */
+	DOUBLE_QUOTE  = '"',
+	SINGLE_QUOTE  = '\'',
+	BACKSLASH     = '\\',
+
+	/* symbolic representations, above 0xFF not to conflict with any byte */
+	STRING_SYMBOL = CPP_STRING_SYMBOL,
+	CHAR_SYMBOL   = CPP_CHAR_SYMBOL
+};
+
 typedef enum { COMMENT_NONE, COMMENT_C, COMMENT_CPLUS, COMMENT_D } Comment;
 
 enum eCppLimits {
 	MaxCppNestingLevel = 20,
 	MaxDirectiveName = 10
+};
+
+/* For tracking __ASSEMBLER__ area. */
+enum eIfSubstate {
+	IF_IF,
+	IF_IFDEF,
+	IF_IFNDEF,
+	IF_ELSE,
+	IF_ELIF,
+	IF_ENDIF,
+};
+
+struct asmAreaInfo {
+	enum eIfSubstate ifSubstate;
+	unsigned long line;
 };
 
 /*  Defines the one nesting level of a preprocessor conditional.
@@ -53,6 +88,9 @@ typedef struct sConditionalInfo {
 	bool branchChosen;       /* branch already selected */
 	bool ignoring;           /* current ignore state */
 	int enterExternalParserBlockNestLevel;          /* the parser state when entering this conditional: used only by cxx */
+
+	/* tracking __ASSEMBLER__ area */
+	struct asmAreaInfo asmArea;
 } conditionalInfo;
 
 enum eState {
@@ -60,6 +98,7 @@ enum eState {
 	DRCTV_DEFINE,  /* "#define" encountered */
 	DRCTV_HASH,    /* initial '#' read; determine directive */
 	DRCTV_IF,      /* "#if" or "#ifdef" encountered */
+	DRCTV_ELIF,    /* "#elif" encountered */
 	DRCTV_PRAGMA,  /* #pragma encountered */
 	DRCTV_UNDEF,   /* "#undef" encountered */
 	DRCTV_INCLUDE, /* "#include" encountered */
@@ -67,14 +106,24 @@ enum eState {
 
 /*  Defines the current state of the pre-processor.
  */
+typedef struct sUngetBuffer {
+	unsigned char *buffer;	  /* memory buffer for unget characters */
+	int size;		/* the current unget buffer size */
+	unsigned char *pointer;	  /* the current unget char: points in the
+						   middle of the buffer */
+	int dataSize;		/* the number of valid unget characters
+						   in the buffer */
+	unsigned long lineNumber;
+	MIOPos filePosition;
+	cppMacroInfo *macro;
+} ungetBuffer;
+
 typedef struct sCppState {
 	langType lang;
 	langType clientLang;
 
-	int * ungetBuffer;       /* memory buffer for unget characters */
-	int ungetBufferSize;      /* the current unget buffer size */
-	int * ungetPointer;      /* the current unget char: points in the middle of the buffer */
-	int ungetDataSize;        /* the number of valid unget characters in the buffer */
+	ungetBuffer  *ungetBuffer;
+	ptrArray *ungetBufferStack;
 
 	/* the contents of the last SYMBOL_CHAR or SYMBOL_STRING */
 	vString * charOrStringContents;
@@ -88,6 +137,7 @@ typedef struct sCppState {
 	bool useClientLangDefineMacroKindIndex;
 	int defineMacroKindIndex;
 	int macroUndefRoleIndex;
+	int macroConditionRoleIndex;
 
 	bool useClientLangMacroParamKindIndex;
 	int macroParamKindIndex;
@@ -101,6 +151,8 @@ typedef struct sCppState {
 
 	struct sDirective {
 		enum eState state;       /* current directive being processed */
+		enum eIfSubstate ifsubstate; /* For tracking __ASSEMBLER__.
+									  * assigned only when state == DICTV_IF */
 		bool	accept;          /* is a directive syntactically permitted? */
 		vString * name;          /* macro name */
 		unsigned int nestLevel;  /* level 0 is not used */
@@ -112,13 +164,42 @@ typedef struct sCppState {
 
 } cppState;
 
+#define CPP_MACRO_REPLACEMENT_FLAG_VARARGS 1
+#define CPP_MACRO_REPLACEMENT_FLAG_STRINGIFY 2
+
+struct sCppMacroReplacementPartInfo {
+	int parameterIndex; /* -1 if this part is a constant */
+	int flags;
+	vString * constant; /* not NULL only if parameterIndex != -1 */
+	struct sCppMacroReplacementPartInfo * next;
+};
+
+struct sCppMacroArg {
+	const char *str;
+	unsigned long lineNumber;
+	MIOPos filePosition;
+	bool free_str;
+};
+
+struct sCppMacroTokens {
+	ptrArray *tarray;
+	cppMacroInfo *macro;
+};
+
+typedef struct sCppMacroToken {
+	const char *str;
+	unsigned long lineNumber;
+	MIOPos filePosition;
+} cppMacroToken;
 
 typedef enum {
 	CPREPRO_MACRO_KIND_UNDEF_ROLE,
+	CPREPRO_MACRO_KIND_CONDITION_ROLE,
 } cPreProMacroRole;
 
 static roleDefinition CPREPROMacroRoles [] = {
 	RoleTemplateUndef,
+	RoleTemplateCondition,
 };
 
 
@@ -132,10 +213,6 @@ static roleDefinition CPREPROHeaderRoles [] = {
 	RoleTemplateLocal,
 };
 
-
-typedef enum {
-	CPREPRO_MACRO, CPREPRO_HEADER, CPREPRO_PARAM,
-} cPreProkind;
 
 static kindDefinition CPreProKinds [] = {
 	{ true,  'd', "macro",      "macro definitions",
@@ -175,12 +252,12 @@ static int externalParserBlockNestLevel;
  */
 static bool BraceFormat = false;
 
-void cppPushExternalParserBlock(void)
+extern void cppPushExternalParserBlock(void)
 {
 	externalParserBlockNestLevel++;
 }
 
-void cppPopExternalParserBlock(void)
+extern void cppPopExternalParserBlock(void)
 {
 	externalParserBlockNestLevel--;
 }
@@ -190,9 +267,7 @@ static cppState Cpp = {
 	.lang = LANG_IGNORE,
 	.clientLang = LANG_IGNORE,
 	.ungetBuffer = NULL,
-	.ungetBufferSize = 0,
-	.ungetPointer = NULL,
-	.ungetDataSize = 0,
+	.ungetBufferStack = NULL,
 	.charOrStringContents = NULL,
 	.resolveRequired = false,
 	.hasAtLiteralStrings = false,
@@ -201,6 +276,7 @@ static cppState Cpp = {
 	.useClientLangDefineMacroKindIndex = false,
 	.defineMacroKindIndex = CPREPRO_MACRO,
 	.macroUndefRoleIndex = CPREPRO_MACRO_KIND_UNDEF_ROLE,
+	.macroConditionRoleIndex = CPREPRO_MACRO_KIND_CONDITION_ROLE,
 	.useClientLangMacroParamKindIndex = false,
 	.macroParamKindIndex = CPREPRO_PARAM,
 	.useClientLangHeaderKindIndex = false,
@@ -231,6 +307,8 @@ static cppState Cpp = {
 static hashTable *makeMacroTable (void);
 static cppMacroInfo * saveMacro(hashTable *table, const char * macro);
 
+static void cppMacroTokensDelete (cppMacroTokens *tokens);
+
 /*
 *   FUNCTION DEFINITIONS
 */
@@ -245,12 +323,38 @@ extern unsigned int cppGetDirectiveNestLevel (void)
 	return Cpp.directive.nestLevel;
 }
 
+static ungetBuffer *ungetBufferNew  (unsigned long lineNumber,
+									 MIOPos filePosition,
+									 cppMacroInfo *macro)
+{
+	ungetBuffer *ub = xCalloc (1, ungetBuffer);
+	ub->lineNumber = lineNumber;
+	ub->filePosition = filePosition;
+	ub->macro = macro;
+	return ub;
+}
+
+static void ungetBufferDelete (ungetBuffer *ub)
+{
+	if (!ub)
+		return;
+
+	if (ub->buffer)
+	{
+		eFree (ub->buffer);
+		ub->buffer = NULL;
+	}
+
+	eFree (ub);
+}
+
 static void cppInitCommon(langType clientLang,
 		     const bool state, const bool hasAtLiteralStrings,
 		     const bool hasCxxRawLiteralStrings,
 		     const bool hasSingleQuoteLiteralNumbers,
 		     int defineMacroKindIndex,
 		     int macroUndefRoleIndex,
+		     int macroConditionRoleIndex,
 		     int macroParamKindIndex,
 		     int headerKindIndex,
 		     int headerSystemRoleIndex, int headerLocalRoleIndex,
@@ -272,7 +376,7 @@ static void cppInitCommon(langType clientLang,
 
 	Cpp.clientLang = clientLang;
 	Cpp.ungetBuffer = NULL;
-	Cpp.ungetPointer = NULL;
+	Cpp.ungetBufferStack = ptrArrayNew ((ptrArrayDeleteFunc)ungetBufferDelete);
 
 	CXX_DEBUG_ASSERT(!Cpp.charOrStringContents,"This string should be null when CPP is not initialized");
 	Cpp.charOrStringContents = vStringNew();
@@ -288,6 +392,7 @@ static void cppInitCommon(langType clientLang,
 		Cpp.useClientLangDefineMacroKindIndex = true;
 
 		Cpp.macroUndefRoleIndex = macroUndefRoleIndex;
+		Cpp.macroConditionRoleIndex = macroConditionRoleIndex;
 		Cpp.macrodefFieldIndex = macrodefFieldIndex;
 	}
 	else
@@ -296,6 +401,7 @@ static void cppInitCommon(langType clientLang,
 		Cpp.useClientLangDefineMacroKindIndex = false;
 
 		Cpp.macroUndefRoleIndex = CPREPRO_MACRO_KIND_UNDEF_ROLE;
+		Cpp.macroConditionRoleIndex = CPREPRO_MACRO_KIND_CONDITION_ROLE;
 		Cpp.macrodefFieldIndex = CPreProFields [F_MACRODEF].ftype;
 	}
 
@@ -355,6 +461,7 @@ extern void cppInit (const bool state, const bool hasAtLiteralStrings,
 		     const bool hasSingleQuoteLiteralNumbers,
 		     int defineMacroKindIndex,
 		     int macroUndefRoleIndex,
+		     int macroConditionRoleIndex,
 		     int macroParamKindIndex,
 		     int headerKindIndex,
 		     int headerSystemRoleIndex, int headerLocalRoleIndex,
@@ -364,7 +471,8 @@ extern void cppInit (const bool state, const bool hasAtLiteralStrings,
 
 	cppInitCommon (client, state, hasAtLiteralStrings,
 				   hasCxxRawLiteralStrings, hasSingleQuoteLiteralNumbers,
-				   defineMacroKindIndex, macroUndefRoleIndex, macroParamKindIndex,
+				   defineMacroKindIndex, macroUndefRoleIndex, macroConditionRoleIndex,
+				   macroParamKindIndex,
 				   headerKindIndex, headerSystemRoleIndex, headerLocalRoleIndex,
 				   macrodefFieldIndex);
 }
@@ -387,11 +495,10 @@ extern void cppTerminate (void)
 		Cpp.directive.name = NULL;
 	}
 
-	if(Cpp.ungetBuffer)
-	{
-		eFree(Cpp.ungetBuffer);
-		Cpp.ungetBuffer = NULL;
-	}
+	ungetBufferDelete (Cpp.ungetBuffer); /* NULL is acceptable */
+	Cpp.ungetBuffer = NULL;
+	ptrArrayDelete (Cpp.ungetBufferStack);
+	Cpp.ungetBufferStack = NULL;
 
 	if(Cpp.charOrStringContents)
 	{
@@ -428,104 +535,177 @@ extern void cppEndStatement (void)
 */
 
 /*  This puts a character back into the input queue for the input File. */
-extern void cppUngetc (const int c)
+static void ungetBufferUngetc (ungetBuffer *ungetBuffer, const int c, vString *charOrStringContents)
 {
-	if(!Cpp.ungetPointer)
+	if (c == STRING_SYMBOL || c == CHAR_SYMBOL)
+	{
+		Assert(charOrStringContents != NULL);
+		cppUngetc(c == STRING_SYMBOL ? '"' : '\'');
+		cppUngetString(vStringValue(charOrStringContents), vStringLength(charOrStringContents));
+		cppUngetc(c == STRING_SYMBOL ? '"' : '\'');
+		vStringClear(charOrStringContents);
+		return;
+	}
+	else if (c == EOF)
+	{
+		return;
+	}
+
+	Assert((unsigned int)c <= 0xff);
+	unsigned char u = (unsigned char)c;
+
+	if(!ungetBuffer->pointer)
 	{
 		// no unget data
-		if(!Cpp.ungetBuffer)
+		if(!ungetBuffer->buffer)
 		{
-			Cpp.ungetBuffer = (int *)eMalloc(8 * sizeof(int));
-			Cpp.ungetBufferSize = 8;
+			ungetBuffer->buffer = eMalloc(8 * sizeof(*(ungetBuffer->buffer)));
+			ungetBuffer->size = 8;
 		}
-		Assert(Cpp.ungetBufferSize > 0);
-		Cpp.ungetPointer = Cpp.ungetBuffer + Cpp.ungetBufferSize - 1;
-		*(Cpp.ungetPointer) = c;
-		Cpp.ungetDataSize = 1;
+		Assert(ungetBuffer->size > 0);
+		ungetBuffer->pointer = ungetBuffer->buffer + ungetBuffer->size - 1;
+		*(ungetBuffer->pointer) = u;
+		ungetBuffer->dataSize = 1;
 		return;
 	}
 
 	// Already have some unget data in the buffer. Must prepend.
-	Assert(Cpp.ungetBuffer);
-	Assert(Cpp.ungetBufferSize > 0);
-	Assert(Cpp.ungetDataSize > 0);
-	Assert(Cpp.ungetPointer >= Cpp.ungetBuffer);
+	Assert(ungetBuffer->buffer);
+	Assert(ungetBuffer->size > 0);
+	Assert(ungetBuffer->dataSize > 0);
+	Assert(ungetBuffer->pointer >= ungetBuffer->buffer);
 
-	if(Cpp.ungetPointer == Cpp.ungetBuffer)
+	if(ungetBuffer->pointer == ungetBuffer->buffer)
 	{
-		Cpp.ungetBufferSize += 8;
-		int * tmp = (int *)eMalloc(Cpp.ungetBufferSize * sizeof(int));
-		memcpy(tmp+8,Cpp.ungetPointer,Cpp.ungetDataSize * sizeof(int));
-		eFree(Cpp.ungetBuffer);
-		Cpp.ungetBuffer = tmp;
-		Cpp.ungetPointer = tmp + 7;
+		ungetBuffer->size += 8;
+		unsigned char * tmp = eMalloc(ungetBuffer->size * sizeof(*(ungetBuffer->buffer)));
+		memcpy(tmp+8,ungetBuffer->pointer,ungetBuffer->dataSize * sizeof(*(ungetBuffer->buffer)));
+		eFree(ungetBuffer->buffer);
+		ungetBuffer->buffer = tmp;
+		ungetBuffer->pointer = tmp + 7;
 	} else {
-		Cpp.ungetPointer--;
+		ungetBuffer->pointer--;
 	}
 
-	*(Cpp.ungetPointer) = c;
-	Cpp.ungetDataSize++;
+	*(ungetBuffer->pointer) = u;
+	ungetBuffer->dataSize++;
 }
 
-int cppUngetBufferSize()
+static int ungetBufferSize (ungetBuffer *ungetBuffer)
 {
-	return Cpp.ungetBufferSize;
+	return ungetBuffer->size;
 }
 
-/*  This puts an entire string back into the input queue for the input File. */
-void cppUngetString(const char * string,int len)
+static void ungetBufferUngetString(ungetBuffer *ungetBuffer, const char * string, int len)
 {
 	if(!string)
 		return;
 	if(len < 1)
 		return;
 
-	if(!Cpp.ungetPointer)
+	if(!ungetBuffer->pointer)
 	{
 		// no unget data
-		if(!Cpp.ungetBuffer)
+		if(!ungetBuffer->buffer)
 		{
-			Cpp.ungetBufferSize = 8 + len;
-			Cpp.ungetBuffer = (int *)eMalloc(Cpp.ungetBufferSize * sizeof(int));
-		} else if(Cpp.ungetBufferSize < len)
+			ungetBuffer->size = 8 + len;
+			ungetBuffer->buffer = eMalloc(ungetBuffer->size * sizeof(*(ungetBuffer->buffer)));
+		} else if(ungetBuffer->size < len)
 		{
-			Cpp.ungetBufferSize = 8 + len;
-			Cpp.ungetBuffer = (int *)eRealloc(Cpp.ungetBuffer,Cpp.ungetBufferSize * sizeof(int));
+			ungetBuffer->size = 8 + len;
+			ungetBuffer->buffer = eRealloc(ungetBuffer->buffer,
+										   ungetBuffer->size * sizeof(*(ungetBuffer->buffer)));
 		}
-		Cpp.ungetPointer = Cpp.ungetBuffer + Cpp.ungetBufferSize - len;
+		ungetBuffer->pointer = ungetBuffer->buffer + ungetBuffer->size - len;
 	} else {
 		// Already have some unget data in the buffer. Must prepend.
-		Assert(Cpp.ungetBuffer);
-		Assert(Cpp.ungetBufferSize > 0);
-		Assert(Cpp.ungetDataSize > 0);
-		Assert(Cpp.ungetPointer >= Cpp.ungetBuffer);
+		Assert(ungetBuffer->buffer);
+		Assert(ungetBuffer->size > 0);
+		Assert(ungetBuffer->dataSize > 0);
+		Assert(ungetBuffer->pointer >= ungetBuffer->buffer);
 
-		if(Cpp.ungetBufferSize < (Cpp.ungetDataSize + len))
+		if(ungetBuffer->size < (ungetBuffer->dataSize + len))
 		{
-			Cpp.ungetBufferSize = 8 + len + Cpp.ungetDataSize;
-			int * tmp = (int *)eMalloc(Cpp.ungetBufferSize * sizeof(int));
-			memcpy(tmp + 8 + len,Cpp.ungetPointer,Cpp.ungetDataSize * sizeof(int));
-			eFree(Cpp.ungetBuffer);
-			Cpp.ungetBuffer = tmp;
-			Cpp.ungetPointer = tmp + 8;
+			ungetBuffer->size = 8 + len + ungetBuffer->dataSize;
+			unsigned char * tmp = eMalloc(ungetBuffer->size * sizeof(*(ungetBuffer->buffer)));
+			memcpy(tmp + 8 + len,ungetBuffer->pointer,ungetBuffer->dataSize * sizeof(*(ungetBuffer->buffer)));
+			eFree(ungetBuffer->buffer);
+			ungetBuffer->buffer = tmp;
+			ungetBuffer->pointer = tmp + 8;
 		} else {
-			Cpp.ungetPointer -= len;
-			Assert(Cpp.ungetPointer >= Cpp.ungetBuffer);
+			ungetBuffer->pointer -= len;
+			Assert(ungetBuffer->pointer >= ungetBuffer->buffer);
 		}
 	}
 
-	int * p = Cpp.ungetPointer;
+	unsigned char* p = ungetBuffer->pointer;
 	const char * s = string;
 	const char * e = string + len;
 
 	while(s < e)
-		*p++ = *s++;
+		*p++ = (unsigned char)(*s++);
 
-	Cpp.ungetDataSize += len;
+	ungetBuffer->dataSize += len;
 }
 
-extern void cppUngetStringBuiltByMacro(const char * string,int len, cppMacroInfo *macro)
+static int ungetBufferGetcFromUngetBuffer (ungetBuffer *ungetBuffer)
 {
+	if(ungetBuffer->pointer)
+	{
+		Assert(ungetBuffer->buffer);
+		Assert(ungetBuffer->size > 0);
+		Assert(ungetBuffer->dataSize > 0);
+
+		int c = *(ungetBuffer->pointer);
+		ungetBuffer->dataSize--;
+		if(ungetBuffer->dataSize > 0)
+			ungetBuffer->pointer++;
+		else
+			ungetBuffer->pointer = NULL;
+		return c;
+	}
+	return EOF;
+}
+
+extern void cppUngetc (const int c)
+{
+	if (Cpp.ungetBuffer == NULL)
+		Cpp.ungetBuffer = ungetBufferNew (getInputLineNumber(),
+										  getInputFilePosition(),
+										  NULL);
+	ungetBufferUngetc (Cpp.ungetBuffer , c, Cpp.charOrStringContents);
+}
+
+extern int cppUngetBufferSize(void)
+{
+	if (Cpp.ungetBuffer == NULL)
+		return 0;
+
+	int size = ungetBufferSize (Cpp.ungetBuffer);
+	for (size_t i = 0; i < ptrArrayCount (Cpp.ungetBufferStack); i++)
+	{
+		ungetBuffer *ub = ptrArrayItem (Cpp.ungetBufferStack, i);
+		i += ungetBufferSize (ub);
+	}
+	return size;
+}
+
+/*  This puts an entire string back into the input queue for the input File. */
+extern void cppUngetString(const char * string, int len)
+{
+	if (Cpp.ungetBuffer == NULL)
+		Cpp.ungetBuffer = ungetBufferNew (getInputLineNumber(),
+										  getInputFilePosition(),
+										  NULL);
+	ungetBufferUngetString (Cpp.ungetBuffer, string, len);
+}
+
+extern void cppUngetMacroTokens (cppMacroTokens *tokens)
+{
+	Assert (tokens);
+
+	cppMacroInfo *macro = tokens->macro;
+
 	if (macro->useCount == 0)
 	{
 		cppMacroInfo *m = Cpp.macroInUse;
@@ -537,29 +717,70 @@ extern void cppUngetStringBuiltByMacro(const char * string,int len, cppMacroInfo
 	CXX_DEBUG_PRINT("Macro <%p> increment useCount: %d->%d", macro,
 					(macro->useCount - 1), macro->useCount);
 
-	cppUngetString (string, len);
+	ptrArray *a = tokens->tarray;
+	if (ptrArrayIsEmpty (a))
+	{
+		cppMacroTokensDelete (tokens);
+		return;
+	}
+
+	if (Cpp.ungetBuffer)
+	{
+		ptrArrayAdd(Cpp.ungetBufferStack, Cpp.ungetBuffer);
+		Cpp.ungetBuffer = NULL;
+	}
+
+	for(size_t i = ptrArrayCount (a); i > 0; i--)
+	{
+		cppMacroToken *t = ptrArrayItem (a, i - 1);
+		ungetBuffer *ub = ungetBufferNew(t->lineNumber, t->filePosition,
+										 macro);
+		ungetBufferUngetString (ub, t->str, strlen (t->str));
+		ptrArrayAdd(Cpp.ungetBufferStack, ub);
+	}
+
+	if (!ptrArrayIsEmpty (Cpp.ungetBufferStack))
+		Cpp.ungetBuffer = ptrArrayRemoveLast (Cpp.ungetBufferStack);
+	cppMacroTokensDelete (tokens);
 }
 
 static int cppGetcFromUngetBufferOrFile(void)
 {
-	if(Cpp.ungetPointer)
+ retry:
+	if (Cpp.ungetBuffer)
 	{
-		Assert(Cpp.ungetBuffer);
-		Assert(Cpp.ungetBufferSize > 0);
-		Assert(Cpp.ungetDataSize > 0);
+		int c = ungetBufferGetcFromUngetBuffer (Cpp.ungetBuffer);
+		if (c != EOF)
+			return c;
 
-		int c = *(Cpp.ungetPointer);
-		Cpp.ungetDataSize--;
-		if(Cpp.ungetDataSize > 0)
-			Cpp.ungetPointer++;
-		else
-			Cpp.ungetPointer = NULL;
-		return c;
+		ungetBufferDelete (Cpp.ungetBuffer);
+		Cpp.ungetBuffer = NULL;
+		if (!ptrArrayIsEmpty (Cpp.ungetBufferStack))
+		{
+			Cpp.ungetBuffer = ptrArrayRemoveLast (Cpp.ungetBufferStack);
+			goto retry;
+		}
 	}
+
+	/* Or */
 
 	if (Cpp.macroInUse)
 		cppClearMacroInUse (&Cpp.macroInUse);
 	return getcFromInputFile();
+}
+
+extern unsigned long cppGetInputLineNumber (void)
+{
+	if (Cpp.ungetBuffer)
+		return Cpp.ungetBuffer->lineNumber;
+	return getInputLineNumber();
+}
+
+extern MIOPos cppGetInputFilePosition (void)
+{
+	if (Cpp.ungetBuffer)
+		return Cpp.ungetBuffer->filePosition;
+	return getInputFilePosition();
 }
 
 
@@ -716,6 +937,7 @@ static bool pushConditional (const bool firstBranchChosen)
 				! firstBranchChosen  &&  ! BraceFormat  &&
 				(ifdef->singleBranch || !doesExaminCodeWithInIf0Branch)));
 		ifdef->enterExternalParserBlockNestLevel = externalParserBlockNestLevel;
+		ifdef->asmArea.line = 0;
 		ignoreBranch = ifdef->ignoring;
 	}
 	return ignoreBranch;
@@ -802,7 +1024,7 @@ static int makeDefineTag (const char *const name, const char* const signature, b
 	return CORK_NIL;
 }
 
-static void makeIncludeTag (const  char *const name, bool systemHeader)
+static void makeIncludeTag (const char *const name, bool systemHeader)
 {
 	bool standing_alone = doesCPreProRunAsStandaloneParser(CPREPRO_HEADER);
 	langType lang = standing_alone ? Cpp.lang: Cpp.clientLang;
@@ -826,7 +1048,7 @@ static void makeIncludeTag (const  char *const name, bool systemHeader)
 
 	if (isLanguageRoleEnabled(lang, Cpp.headerKindIndex, role_index))
 	{
-		if (doesCPreProRunAsStandaloneParser (CPREPRO_HEADER))
+		if (standing_alone)
 			pushLanguage (Cpp.lang);
 
 		initRefTagEntry (&e, name, Cpp.headerKindIndex, role_index);
@@ -834,38 +1056,42 @@ static void makeIncludeTag (const  char *const name, bool systemHeader)
 		e.truncateLineAfterTag = true;
 		makeTagEntry (&e);
 
-		if (doesCPreProRunAsStandaloneParser (CPREPRO_HEADER))
+		if (standing_alone)
 			popLanguage ();
 	}
 }
 
-static void makeParamTag (vString *name, bool placeholder)
+static int makeParamTag (vString *name, short nth, bool placeholder)
 {
 	bool standing_alone = doesCPreProRunAsStandaloneParser(CPREPRO_MACRO);
-	langType lang = standing_alone ? Cpp.lang: Cpp.clientLang;
 
 	Assert (Cpp.macroParamKindIndex != KIND_GHOST_INDEX);
 
-	int r;
-	pushLanguage (lang);
-	r = makeSimpleTag (name, Cpp.macroParamKindIndex);
-	popLanguage ();
+	if (standing_alone)
+		pushLanguage (Cpp.lang);
 
+	tagEntryInfo e;
+	initTagEntry (&e, vStringValue (name), Cpp.macroParamKindIndex);
+	updateTagLine (&e, cppGetInputLineNumber (), cppGetInputFilePosition ());
+	e.extensionFields.nth = nth;
 	if (placeholder)
-	{
-		tagEntryInfo *e = getEntryInCorkQueue (r);
-		if (e)
-			e->placeholder = 1;
-	}
+		markTagAsPlaceholder (&e, placeholder);
+	int r = makeTagEntry(&e);
+
+	if (standing_alone)
+		popLanguage ();
+
+	return r;
 }
 
-static void regenreateSignatureFromParameters (vString * buffer, int from, int to)
+static void makeSignatureStringFromParameters (vString * buffer, intArray *parameters)
 {
 	vStringPut(buffer, '(');
-	for (int pindex = from; pindex < to; pindex++)
+	for (size_t i = 0; i < intArrayCount (parameters); i++)
 	{
+		int pindex = intArrayItem (parameters, i);
 		tagEntryInfo *e = getEntryInCorkQueue (pindex);
-		if (e && !isTagExtra (e))
+		if (e)
 		{
 			vStringCatS (buffer, e->name);
 			vStringPut (buffer, ',');
@@ -899,12 +1125,14 @@ static int directiveDefine (const int c, bool undef)
 		readIdentifier (c, Cpp.directive.name);
 		if (! isIgnore ())
 		{
-			unsigned long 	lineNumber = getInputLineNumber ();
-			MIOPos filePosition = getInputFilePosition ();
+			unsigned long 	lineNumber = cppGetInputLineNumber ();
+			MIOPos filePosition = cppGetInputFilePosition ();
 			int p = cppGetcFromUngetBufferOrFile ();
+			short nth = 0;
 
 			if (p == '(')
 			{
+				intArray *params = intArrayNew ();
 				vString *param = vStringNew ();
 				int param_start = (int)countEntryInCorkQueue();
 				do {
@@ -919,7 +1147,29 @@ static int directiveDefine (const int c, bool undef)
 
 					if (vStringLength (param) > 0)
 					{
-						makeParamTag (param, vStringChar(param, 0) == '.');
+						bool gnuext_placeholder = false;
+						if (vStringLength (param) > 3
+							&& strcmp(vStringValue (param) + vStringLength (param) - 3,
+									  "...")  == 0)
+						{
+							/* args... in GNU cpp extension
+							 *
+							 * #define debug(format, args...) fprintf (stderr, format, args)
+							 *
+							 * In this case, args should be tagged. However the signature field
+							 * for debug must be "(format,args...)".
+							 */
+							vString *nodots = vStringNewNInit (vStringValue (param),
+															   vStringLength (param) - 3);
+							makeParamTag (nodots, nth, false);
+							vStringDelete (nodots);
+							gnuext_placeholder = true;
+						}
+
+						int r = makeParamTag (param, nth++,
+											  vStringChar(param, 0) == '.'
+											  || gnuext_placeholder);
+						intArrayAdd (params, r);
 						vStringClear (param);
 					}
 					if (p == '\\')
@@ -931,18 +1181,18 @@ static int directiveDefine (const int c, bool undef)
 				if (p == ')')
 				{
 					vString *signature = vStringNew ();
-					regenreateSignatureFromParameters (signature, param_start, param_end);
+					makeSignatureStringFromParameters (signature, params);
 					r = makeDefineTag (vStringValue (Cpp.directive.name), vStringValue (signature), undef);
 					vStringDelete (signature);
 				}
 				else
 					r = makeDefineTag (vStringValue (Cpp.directive.name), NULL, undef);
+				intArrayDelete (params);
 
 				tagEntryInfo *e = getEntryInCorkQueue (r);
 				if (e)
 				{
-					e->lineNumber = lineNumber;
-					e->filePosition = filePosition;
+					updateTagLine (e, lineNumber, filePosition);
 					patchScopeFieldOfParameters (param_start, param_end, r);
 				}
 			}
@@ -994,10 +1244,62 @@ static void directivePragma (int c)
 	Cpp.directive.state = DRCTV_NONE;
 }
 
-static bool directiveIf (const int c)
+/*
+ * __ASSEMBLER__ ("3.7.1 Standard Predefined Macros" in GNU cpp info),
+ * __ASSEMBLY__	 (Used in Linux kernel)
+ */
+static bool isAssemblerBlock (int c)
 {
+	if (c != '_')
+		return false;
+
+	bool r = false;
+	vString *cond = vStringNew ();
+	readIdentifier (c, cond);
+	if (strcmp (vStringValue (cond), "__ASSEMBLER__") == 0
+		|| strcmp (vStringValue (cond), "__ASSEMBLY__") == 0)
+		r = true;
+
+	CXX_DEBUG_PRINT("ASSEMBLER[%s]: %s", r? "true": "false", vStringValue(cond));
+
+	size_t len = vStringLength (cond);
+	/* Pushing back to the stream.
+	 * The first character is not read in this function.
+	 * So don't touch the character here. */
+	for (size_t i = len; i > 1; i--)
+	{
+		c = vStringChar (cond, i - 1);
+		cppUngetc (c);
+	}
+
+	vStringDelete (cond);
+	return r;
+}
+
+static bool directiveIf (const int c, enum eIfSubstate if_substate)
+{
+	static langType asmLang = LANG_IGNORE;
+	if (asmLang == LANG_IGNORE)
+		asmLang = getNamedLanguage ("Asm", 0);
+
 	DebugStatement ( const bool ignore0 = isIgnore (); )
-	const bool ignore = pushConditional ((bool) (c != '0'));
+	bool firstBranchChosen = (bool) (c != '0');
+	bool assemblerBlock = false;
+	if (Cpp.clientLang != asmLang && firstBranchChosen)
+	{
+		assemblerBlock = isAssemblerBlock(c);
+		if (assemblerBlock && if_substate != IF_IFNDEF)
+			firstBranchChosen = false;
+	}
+
+	CXX_DEBUG_PRINT("firstBranchChosen: %d", firstBranchChosen);
+	const bool ignore = pushConditional (firstBranchChosen);
+	if (assemblerBlock)
+	{
+		conditionalInfo *ifdef = currentConditional ();
+		ifdef->asmArea.ifSubstate = if_substate;
+		ifdef->asmArea.line = cppGetInputLineNumber ();
+	}
 
 	Cpp.directive.state = DRCTV_NONE;
 	DebugStatement ( debugCppNest (true, Cpp.directive.nestLevel);
@@ -1006,6 +1308,10 @@ static bool directiveIf (const int c)
 	return ignore;
 }
 
+static void directiveElif (const int c)
+{
+	Cpp.directive.state = DRCTV_NONE;
+}
 
 static void directiveInclude (const int c)
 {
@@ -1017,6 +1323,36 @@ static void directiveInclude (const int c)
 					c == '<');
 	}
 	Cpp.directive.state = DRCTV_NONE;
+}
+
+static void promiseOrPrepareAsm (conditionalInfo *ifdef, enum eIfSubstate currentState)
+{
+	if (!ifdef->asmArea.line)
+		return;
+
+	if (((ifdef->asmArea.ifSubstate == IF_IF || ifdef->asmArea.ifSubstate == IF_IFDEF)
+		 && (currentState == IF_ELSE || currentState == IF_ELIF || currentState == IF_ENDIF))
+		|| ((ifdef->asmArea.ifSubstate == IF_ELSE)
+			&& (currentState == IF_ENDIF)))
+	{
+		unsigned long start = ifdef->asmArea.line + 1;
+		unsigned long end = cppGetInputLineNumber ();
+
+		if (start < end)
+			makePromise ("Asm", start, 0, end, 0, start);
+
+		ifdef->asmArea.line = 0;
+	}
+	else if (ifdef->asmArea.ifSubstate == IF_IFNDEF)
+	{
+		if (currentState == IF_ELIF)
+			ifdef->asmArea.line = 0;
+		else if (currentState == IF_ELSE)
+		{
+			ifdef->asmArea.ifSubstate = IF_ELSE;
+			ifdef->asmArea.line = cppGetInputLineNumber ();
+		}
+	}
 }
 
 static bool directiveHash (const int c)
@@ -1033,19 +1369,33 @@ static bool directiveHash (const int c)
 	else if (stringMatch (directive, "undef"))
 		Cpp.directive.state = DRCTV_UNDEF;
 	else if (strncmp (directive, "if", (size_t) 2) == 0)
+	{
 		Cpp.directive.state = DRCTV_IF;
+		Cpp.directive.ifsubstate = IF_IF;
+		if (directive[2] == 'd')
+			Cpp.directive.ifsubstate = IF_IFDEF;
+		else if (directive[2] == 'n')
+			Cpp.directive.ifsubstate = IF_IFNDEF;
+	}
 	else if (stringMatch (directive, "elif")  ||
 			stringMatch (directive, "else"))
 	{
+		enum eIfSubstate s = (directive[2] == 's')? IF_ELSE: IF_ELIF;
+		conditionalInfo *ifdef = currentConditional ();
+		promiseOrPrepareAsm (ifdef, s);
+
 		ignore = setIgnore (isIgnoreBranch ());
 		CXX_DEBUG_PRINT("Found #elif or #else: ignore is %d",ignore);
-		if (! ignore  &&  stringMatch (directive, "else"))
+		if (! ignore  &&  s == IF_ELSE)
 			chooseBranch ();
-		Cpp.directive.state = DRCTV_NONE;
+		Cpp.directive.state = (s == IF_ELIF)? DRCTV_ELIF: DRCTV_NONE;
 		DebugStatement ( if (ignore != ignore0) debugCppIgnore (ignore); )
 	}
 	else if (stringMatch (directive, "endif"))
 	{
+		conditionalInfo *ifdef = currentConditional ();
+		promiseOrPrepareAsm (ifdef, IF_ENDIF);
+
 		DebugStatement ( debugCppNest (false, Cpp.directive.nestLevel); )
 		ignore = popConditional ();
 		Cpp.directive.state = DRCTV_NONE;
@@ -1061,7 +1411,7 @@ static bool directiveHash (const int c)
 
 /*  Handles a pre-processor directive whose first character is given by "c".
  */
-static bool handleDirective (const int c, int *macroCorkIndex)
+static bool handleDirective (const int c, int *macroCorkIndex, bool *inspect_conidtion)
 {
 	bool ignore = isIgnore ();
 
@@ -1072,10 +1422,17 @@ static bool handleDirective (const int c, int *macroCorkIndex)
 			*macroCorkIndex = directiveDefine (c, false);
 			break;
 		case DRCTV_HASH:    ignore = directiveHash (c);  break;
-		case DRCTV_IF:      ignore = directiveIf (c);    break;
+		case DRCTV_IF:
+			ignore = directiveIf (c, Cpp.directive.ifsubstate);
+			*inspect_conidtion = true;
+			break;
+		case DRCTV_ELIF:
+			directiveElif (c);
+			*inspect_conidtion = true;
+			break;
 		case DRCTV_PRAGMA:  directivePragma (c);         break;
-		case DRCTV_UNDEF:   directiveUndef (c);         break;
-		case DRCTV_INCLUDE: directiveInclude (c);         break;
+		case DRCTV_UNDEF:   directiveUndef (c);          break;
+		case DRCTV_INCLUDE: directiveInclude (c);        break;
 	}
 	return ignore;
 }
@@ -1172,7 +1529,7 @@ static int skipOverDComment (void)
 	return c;
 }
 
-const vString * cppGetLastCharOrStringContents (void)
+extern const vString * cppGetLastCharOrStringContents (void)
 {
 	CXX_DEBUG_ASSERT(Cpp.charOrStringContents,"Shouldn't be called when CPP is not initialized");
 	return Cpp.charOrStringContents;
@@ -1191,15 +1548,24 @@ static int skipToEndOfString (bool ignoreBackslash)
 	{
 		if (c == BACKSLASH && ! ignoreBackslash)
 		{
-			vStringPutWithLimit (Cpp.charOrStringContents, c, 1024);
-			c = cppGetcFromUngetBufferOrFile ();  /* throw away next character, too */
-			if (c != EOF)
-				vStringPutWithLimit (Cpp.charOrStringContents, c, 1024);
+			int c0 = cppGetcFromUngetBufferOrFile ();
+			if (c0 == '\n')
+				continue;
+			if (c0 == EOF)
+				break;
+
+			if (vStringPutWithLimit (Cpp.charOrStringContents, c, 1024))
+			{
+				if (vStringPutWithLimit (Cpp.charOrStringContents, c0, 1024))
+					continue;
+				/* delete the last back slash at the end of the vstring. */
+				vStringChop(Cpp.charOrStringContents);
+			}
 		}
 		else if (c == DOUBLE_QUOTE)
 			break;
 		else
-			vStringPutWithLimit (Cpp.charOrStringContents, c, 1024);
+			(void)vStringPutWithLimit (Cpp.charOrStringContents, c, 1024);
 	}
 	return STRING_SYMBOL;  /* symbolic representation of string */
 }
@@ -1257,7 +1623,7 @@ static int skipToEndOfCxxRawLiteralString (void)
  *  special character to symbolically represent a generic character.
  *  Also detects Vera numbers that include a base specifier (ie. 'b1010).
  */
-static int skipToEndOfChar ()
+static int skipToEndOfChar (void)
 {
 	int c;
 	int count = 0, veraBase = '\0';
@@ -1269,10 +1635,19 @@ static int skipToEndOfChar ()
 	    ++count;
 		if (c == BACKSLASH)
 		{
-			vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
-			c = cppGetcFromUngetBufferOrFile ();  /* throw away next character, too */
-			if (c != EOF)
-				vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
+			int c0 = cppGetcFromUngetBufferOrFile ();
+			if (c0 == '\n')
+				continue;
+			if (c0 == EOF)
+				break;
+
+			if (vStringPutWithLimit (Cpp.charOrStringContents, c, 10))
+			{
+				if (vStringPutWithLimit (Cpp.charOrStringContents, c0, 10))
+					continue;
+				/* delete the last back slash at the end of the vstring.*/
+				vStringChop(Cpp.charOrStringContents);
+			}
 		}
 		else if (c == SINGLE_QUOTE)
 			break;
@@ -1286,7 +1661,7 @@ static int skipToEndOfChar ()
 			if (count == 1  &&  strchr ("DHOB", toupper (c)) != NULL)
 			{
 				veraBase = c;
-				vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
+				(void)vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
 			}
 			else if (veraBase != '\0'  &&  ! isalnum (c))
 			{
@@ -1294,10 +1669,10 @@ static int skipToEndOfChar ()
 				break;
 			}
 			else
-				vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
+				(void)vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
 		}
 		else
-			vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
+			(void)vStringPutWithLimit (Cpp.charOrStringContents, c, 10);
 	}
 	return CHAR_SYMBOL;  /* symbolic representation of character */
 }
@@ -1305,14 +1680,83 @@ static int skipToEndOfChar ()
 static void attachFields (int macroCorkIndex, unsigned long endLine, const char *macrodef)
 {
 	tagEntryInfo *tag = getEntryInCorkQueue (macroCorkIndex);
-	if (!tag)
-		return;
-
-	tag->extensionFields.endLine = endLine;
-	if (macrodef)
-		attachParserFieldToCorkEntry (macroCorkIndex, Cpp.macrodefFieldIndex, macrodef);
+	if (tag)
+	{
+		setTagEndLine (tag, endLine);
+		if (macrodef)
+			attachParserField (tag, Cpp.macrodefFieldIndex, macrodef);
+	}
 }
 
+static vString * conditionMayFlush (vString* condition, bool del)
+{
+	bool standing_alone = doesCPreProRunAsStandaloneParser(CPREPRO_MACRO);
+
+	if (condition == NULL)
+		return condition;
+
+	size_t len = vStringLength(condition);
+	if (len > 0
+		&& (! (
+				(len == 7
+				 && strcmp (vStringValue (condition), "defined") == 0)
+			   )))
+	{
+		if (standing_alone)
+			pushLanguage (Cpp.lang);
+
+		tagEntryInfo e;
+		initRefTagEntry (&e, vStringValue (condition),
+						 Cpp.defineMacroKindIndex, Cpp.macroConditionRoleIndex);
+		updateTagLine (&e, cppGetInputLineNumber (), cppGetInputFilePosition ());
+		makeTagEntry (&e);
+
+		if (standing_alone)
+			popLanguage ();
+	}
+
+	if (del)
+	{
+		vStringDelete (condition);
+		return NULL;
+	}
+
+	vStringClear(condition);
+	return condition;
+}
+
+static void conditionMayPut (vString *condition, int c)
+{
+	if (condition == NULL)
+		return;
+
+	if (vStringLength (condition) > 0
+		|| (!isdigit(c)))
+		vStringPut(condition, c);
+}
+
+extern void cppVStringPut (vString* string, const int c)
+{
+	if (c <= 0xff)
+		vStringPut (string, c);
+	else
+	{
+		char marker = '"';
+		switch (c)
+		{
+			case CHAR_SYMBOL:
+				marker = '\'';
+				/* Fall through */
+			case STRING_SYMBOL:
+				vStringPut (string, marker);
+				vStringCat (string, cppGetLastCharOrStringContents ());
+				vStringPut (string, marker);
+				break;
+			default:
+				AssertNotReached();
+		}
+	}
+}
 
 /*  This function returns the next character, stripping out comments,
  *  C pre-processor directives, and the contents of single and double
@@ -1326,6 +1770,7 @@ extern int cppGetc (void)
 	int c;
 	int macroCorkIndex = CORK_NIL;
 	vString *macrodef = NULL;
+	vString *condition = NULL;
 
 
 	do {
@@ -1340,10 +1785,11 @@ process:
 				if (macroCorkIndex != CORK_NIL)
 				{
 					attachFields (macroCorkIndex,
-								  getInputLineNumber(),
+								  cppGetInputLineNumber(),
 								  macrodef? vStringValue (macrodef): NULL);
 					macroCorkIndex = CORK_NIL;
 				}
+				condition = conditionMayFlush(condition, true);
 				break;
 
 			case TAB:
@@ -1351,16 +1797,19 @@ process:
 				if (macrodef && vStringLength (macrodef) > 0
 					&& vStringLast (macrodef) != ' ')
 					vStringPut (macrodef, ' ');
+				condition = conditionMayFlush(condition, false);
 				break;  /* ignore most white space */
 
 			case NEWLINE:
+				if (directive)
+					condition = conditionMayFlush(condition, true);
 				if (directive  &&  ! ignore)
 				{
 					directive = false;
 					if (macroCorkIndex != CORK_NIL)
 					{
 						attachFields (macroCorkIndex,
-									  getInputLineNumber(),
+									  cppGetInputLineNumber(),
 									  macrodef? vStringValue (macrodef): NULL);
 						macroCorkIndex = CORK_NIL;
 					}
@@ -1369,6 +1818,8 @@ process:
 				break;
 
 			case DOUBLE_QUOTE:
+				condition = conditionMayFlush(condition, false);
+
 				if (Cpp.directive.state == DRCTV_INCLUDE)
 					goto enter;
 				else
@@ -1390,6 +1841,8 @@ process:
 				break;
 
 			case '#':
+				condition = conditionMayFlush(condition, false);
+
 				if (Cpp.directive.accept)
 				{
 					directive = true;
@@ -1401,18 +1854,25 @@ process:
 				break;
 
 			case SINGLE_QUOTE:
+				condition = conditionMayFlush(condition, false);
+
 				Cpp.directive.accept = false;
 				c = skipToEndOfChar ();
 
 				/* We assume none may want to know the content of the
 				 * literal; just put ''. */
 				if (macrodef)
-					vStringCatS (macrodef, "''");
-
+				{
+					vStringPut (macrodef, '\'');
+					vStringCat (macrodef, Cpp.charOrStringContents);
+					vStringPut (macrodef, '\'');
+				}
 				break;
 
 			case '/':
 			{
+				condition = conditionMayFlush(condition, false);
+
 				const Comment comment = isComment ();
 
 				if (comment == COMMENT_C)
@@ -1436,6 +1896,8 @@ process:
 
 			case BACKSLASH:
 			{
+				condition = conditionMayFlush(condition, false);
+
 				int next = cppGetcFromUngetBufferOrFile ();
 
 				if (next == NEWLINE)
@@ -1451,6 +1913,8 @@ process:
 
 			case '?':
 			{
+				condition = conditionMayFlush(condition, false);
+
 				int next = cppGetcFromUngetBufferOrFile ();
 				if (next != '?')
 				{
@@ -1488,6 +1952,8 @@ process:
 			 */
 			case '<':
 			{
+				condition = conditionMayFlush(condition, false);
+
 				/*
 				   Quoted from http://www.open-std.org/jtc1/sc22/wg21/docs/papers/2011/n3237.html:
 				   ------
@@ -1535,6 +2001,8 @@ process:
 			}
 			case ':':
 			{
+				condition = conditionMayFlush(condition, false);
+
 				int next = cppGetcFromUngetBufferOrFile ();
 				if (next == '>')
 					c = ']';
@@ -1548,6 +2016,8 @@ process:
 			}
 			case '%':
 			{
+				condition = conditionMayFlush(condition, false);
+
 				int next = cppGetcFromUngetBufferOrFile ();
 				switch (next)
 				{
@@ -1565,6 +2035,8 @@ process:
 			default:
 				if (c == '@' && Cpp.hasAtLiteralStrings)
 				{
+					condition = conditionMayFlush(condition, false);
+
 					int next = cppGetcFromUngetBufferOrFile ();
 					if (next == DOUBLE_QUOTE)
 					{
@@ -1583,6 +2055,8 @@ process:
 				}
 				else if (c == 'R' && Cpp.hasCxxRawLiteralStrings)
 				{
+					conditionMayPut(condition, c);
+
 					/* OMG!11 HACK!!11  Get the previous character.
 					 *
 					 * We need to know whether the previous character was an identifier or not,
@@ -1642,22 +2116,34 @@ process:
 						cppUngetc(next);
 					if (macrodef)
 						vStringPut (macrodef, c);
-
+					conditionMayPut(condition, c);
 				}
 				else
 				{
 					if (macrodef)
 						vStringPut (macrodef, c);
+					if (isalnum(c) || c == '_')
+						conditionMayPut(condition, c);
+					else
+						condition = conditionMayFlush(condition, false);
 				}
 			enter:
 				Cpp.directive.accept = false;
 				if (directive)
 				{
-					ignore = handleDirective (c, &macroCorkIndex);
+					bool inspect_conidtion = false;
+					ignore = handleDirective (c, &macroCorkIndex, &inspect_conidtion);
 					if (Cpp.macrodefFieldIndex != FIELD_UNKNOWN
 						&& macroCorkIndex != CORK_NIL
 						&& macrodef == NULL)
 						macrodef = vStringNew ();
+					if (condition == NULL
+						&& inspect_conidtion)
+					{
+						condition = vStringNew ();
+						if (isalpha(c) || c == '_')
+							conditionMayPut(condition, c);
+					}
 				}
 				break;
 		}
@@ -1666,9 +2152,12 @@ process:
 	if (macrodef)
 		vStringDelete (macrodef);
 
-	DebugStatement ( debugPutc (DEBUG_CPP, c); )
+	if (condition)
+		vStringDelete (condition);
+
+	DebugStatement ( cppDebugPutc (DEBUG_CPP, c); )
 	DebugStatement ( if (c == NEWLINE)
-				debugPrintf (DEBUG_CPP, "%6ld: ", getInputLineNumber () + 1); )
+				debugPrintf (DEBUG_CPP, "%6ld: ", cppGetInputLineNumber () + 1); )
 
 	return c;
 }
@@ -1676,7 +2165,8 @@ process:
 static void findCppTags (void)
 {
 	cppInitCommon (Cpp.lang, 0, false, false, false,
-				   KIND_GHOST_INDEX, 0, KIND_GHOST_INDEX,
+				   KIND_GHOST_INDEX, 0, 0,
+				   KIND_GHOST_INDEX,
 				   KIND_GHOST_INDEX, 0, 0,
 				   FIELD_UNKNOWN);
 
@@ -1699,7 +2189,7 @@ static bool buildMacroInfoFromTagEntry (int corkIndex,
 {
 	cppMacroInfo **info = data;
 
-	if (entry->langType == Cpp.clientLang
+	if ((entry->langType == Cpp.clientLang || entry->langType == Cpp.lang)
 		&& entry->kindIndex == Cpp.defineMacroKindIndex
 		&& isRoleAssigned (entry, ROLE_DEFINITION_INDEX))
 	{
@@ -1720,7 +2210,7 @@ static bool buildMacroInfoFromTagEntry (int corkIndex,
 	return true;
 }
 
-extern cppMacroInfo * cppFindMacroFromSymtab (const char *const name)
+static cppMacroInfo * cppFindMacroFromSymtab (const char *const name)
 {
 	cppMacroInfo *info = NULL;
 	foreachEntriesInScope (CORK_NIL, name, buildMacroInfoFromTagEntry, &info);
@@ -1754,20 +2244,87 @@ extern cppMacroInfo * cppFindMacro (const char *const name)
 	return NULL;
 }
 
-extern vString * cppBuildMacroReplacement(
-		const cppMacroInfo * macro,
-		const char ** parameters, /* may be NULL */
-		int parameterCount
-	)
+extern cppMacroArg *cppMacroArgNew (const char *str, bool free_str_when_deleting,
+									unsigned long lineNumber, MIOPos filePosition)
+{
+	cppMacroArg *a = xMalloc (1, cppMacroArg);
+
+	a->str = str;
+	a->free_str = free_str_when_deleting;
+	a->lineNumber = lineNumber;
+	a->filePosition = filePosition;
+
+	return a;
+}
+
+extern void cppMacroArgDelete (void *macroArg)
+{
+	cppMacroArg *a = (cppMacroArg *)macroArg;
+	if (a->free_str)
+		eFree ((void *)a->str);
+	a->str = NULL;
+	eFree (macroArg);
+}
+
+static cppMacroToken *cppMacroTokenNew(unsigned long lineNumber, MIOPos filePosition)
+{
+	cppMacroToken *t = xMalloc (1, cppMacroToken);
+	t->str = NULL;
+	t->lineNumber = lineNumber;
+	t->filePosition = filePosition;
+	return t;
+}
+
+static void cppMacroTokenDelete (cppMacroToken *t)
+{
+	if (t->str)
+		eFree ((void *)t->str);
+	t->str = NULL;
+	eFree (t);
+}
+
+static cppMacroTokens *cppMacroTokensNew (cppMacroInfo * macro)
+{
+	cppMacroTokens *r = xMalloc (1, cppMacroTokens);
+
+	r->tarray = ptrArrayNew ((ptrArrayDeleteFunc)cppMacroTokenDelete);
+	r->macro = macro;
+
+	return r;
+}
+
+static void cppMacroTokensDelete (cppMacroTokens *tokens)
+{
+	Assert (tokens);
+
+	ptrArrayDelete (tokens->tarray);
+	tokens->tarray = NULL;
+	eFree (tokens);
+}
+
+extern cppMacroTokens *cppExpandMacro (cppMacroInfo * macro,
+									   const ptrArray *args,
+									   unsigned long lineNumber,
+									   MIOPos filePosition)
 {
 	if(!macro)
 		return NULL;
 
+	if(cppUngetBufferSize () >= CPP_MAXIMUM_UNGET_BUFFER_SIZE_FOR_MACRO_REPLACEMENTS)
+	{
+		CXX_DEBUG_PRINT ("Ungetbuffer overflow when processing \"%s\": %d",
+						 macro->name, cppUngetBufferSize());
+		return NULL;
+	}
+
 	if(!macro->replacements)
 		return NULL;
 
-	vString * ret = vStringNew();
+	cppMacroTokens *tokens = cppMacroTokensNew (macro);
+	cppMacroToken *t = cppMacroTokenNew(lineNumber, filePosition);
+	ptrArrayAdd (tokens->tarray, t);
 
+	vString * vstr = vStringNew();
 	cppMacroReplacementPartInfo * r = macro->replacements;
 
 	while(r)
@@ -1775,36 +2332,92 @@ extern vString * cppBuildMacroReplacement(
 		if(r->parameterIndex < 0)
 		{
 			if(r->constant)
-				vStringCat(ret,r->constant);
+			{
+				/* We assume the constant parts of the macro definition are
+				 * at the beginning of the current macro expansion. */
+				t->str = vStringDeleteUnwrap (vstr);
+
+				t = cppMacroTokenNew(lineNumber, filePosition);
+				ptrArrayAdd (tokens->tarray, t);
+
+				vstr = vStringNewCopy (r->constant);
+			}
 		} else {
-			if(parameters && (r->parameterIndex < parameterCount))
+			if(args && (r->parameterIndex < ptrArrayCount (args)))
 			{
 				if(r->flags & CPP_MACRO_REPLACEMENT_FLAG_STRINGIFY)
-					vStringPut(ret,'"');
+					vStringPut(vstr,'"');
+				t->str = vStringDeleteUnwrap (vstr);
 
-				vStringCatS(ret,parameters[r->parameterIndex]);
+				cppMacroArg *a = ptrArrayItem (args, r->parameterIndex);
+				t = cppMacroTokenNew(a->lineNumber, a->filePosition);
+				ptrArrayAdd (tokens->tarray, t);
+
+				vstr = vStringNewInit(a->str);
 				if(r->flags & CPP_MACRO_REPLACEMENT_FLAG_VARARGS)
 				{
 					int idx = r->parameterIndex + 1;
-					while(idx < parameterCount)
+					while(idx < ptrArrayCount (args))
 					{
-						vStringPut(ret,',');
-						vStringCatS(ret,parameters[idx]);
+						vStringPut(vstr,',');
+						t->str = vStringDeleteUnwrap (vstr);
+
+						a = ptrArrayItem (args, idx);
+						t = cppMacroTokenNew(a->lineNumber, a->filePosition);
+						ptrArrayAdd (tokens->tarray, t);
+						vstr = vStringNew();
+
+						vStringCatS(vstr, a->str);
 						idx++;
 					}
 				}
 
 				if(r->flags & CPP_MACRO_REPLACEMENT_FLAG_STRINGIFY)
-					vStringPut(ret,'"');
+					vStringPut(vstr,'"');
 			}
 		}
 
 		r = r->next;
 	}
 
-	return ret;
+	if (t->str == NULL)
+		t->str = vStringDeleteUnwrap (vstr);
+
+	return tokens;
 }
 
+#ifdef DEBUG
+extern
+#else
+static
+#endif
+vString *cppFlattenMacroTokensToNewString (cppMacroTokens *tokens)
+{
+	Assert (tokens);
+
+	vString *vstr = vStringNew ();
+
+	for (size_t i = 0; i < ptrArrayCount (tokens->tarray); i++)
+	{
+		cppMacroToken *t = ptrArrayItem (tokens->tarray, i);
+		vStringCatS (vstr, t->str);
+	}
+
+	return vstr;
+}
+
+extern vString *cppExpandMacroAsNewString(cppMacroInfo * macro, const ptrArray *args)
+{
+	cppMacroTokens * tokens = cppExpandMacro (macro, args,
+											  cppGetInputLineNumber (),
+											  cppGetInputFilePosition ());
+	if (!tokens)
+		return NULL;
+
+	vString *vstr = cppFlattenMacroTokensToNewString (tokens);
+	cppMacroTokensDelete (tokens);
+	return vstr;
+}
 
 static void saveIgnoreToken(const char * ignoreToken)
 {
@@ -1867,8 +2480,8 @@ static void saveIgnoreToken(const char * ignoreToken)
 	}
 	info->useCount = 0;
 	info->next = NULL;
-
-	hashTablePutItem(cmdlineMacroTable,eStrndup(tokenBegin,tokenEnd - tokenBegin),info);
+	info->name = eStrndup(tokenBegin,tokenEnd - tokenBegin);
+	hashTablePutItem(cmdlineMacroTable,info->name,info);
 
 	verbose ("    ignore token: %s\n", ignoreToken);
 }
@@ -1894,7 +2507,7 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 		return NULL;
 	}
 
-	if(!(isalpha(*c) || (*c == '_' || (*c == '$') )))
+	if(!(isalpha((unsigned char) *c) || (*c == '_' || (*c == '$') )))
 	{
 		CXX_DEBUG_LEAVE_TEXT("Macro does not start with an alphanumeric character");
 		return NULL; // must be a sequence of letters and digits
@@ -1902,7 +2515,7 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 
 	const char * identifierBegin = c;
 
-	while(*c && (isalnum(*c) || (*c == '_') || (*c == '$') ))
+	while(*c && (isalnum((unsigned char) *c) || (*c == '_') || (*c == '$') ))
 		c++;
 
 	const char * identifierEnd = c;
@@ -1975,6 +2588,7 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 		CXX_DEBUG_PRINT("Got %d parameters",iParamCount);
 
 	} else {
+		CXX_DEBUG_PRINT("Macro has no parameter list");
 		info->hasParameterList = false;
 	}
 
@@ -2035,14 +2649,14 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 
 		while(*c)
 		{
-			if(isalpha(*c) || (*c == '_'))
+			if(isalpha((unsigned char) *c) || (*c == '_'))
 			{
 				if(c > begin)
 					ADD_CONSTANT_REPLACEMENT(begin,c - begin);
 
 				const char * tokenBegin = c;
 
-				while(*c && (isalnum(*c) || (*c == '_')))
+				while(*c && (isalnum((unsigned char) *c) || (*c == '_')))
 					c++;
 
 				// check if it is a parameter
@@ -2059,13 +2673,25 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 
 					if(
 							(
+								/* #define debug(format, ...) fprintf (stderr, format, __VA_ARGS__) */
 								bIsVarArg &&
 								(paramLen == 3) &&
 								(strncmp(paramBegin[i],"...",3) == 0)
 							) || (
+								/* #define debug(MSG) fputs(MSG, stderr) */
 								(!bIsVarArg) &&
 								(paramLen == tokenLen) &&
 								(strncmp(paramBegin[i],tokenBegin,paramLen) == 0)
+							) || (
+								/* GNU cpp extension:
+								 * #define debug(format, args...) fprintf (stderr, format, args)
+								 */
+								(!bIsVarArg) &&
+								(paramLen == tokenLen + 3) &&
+								(strncmp(paramBegin[i] + tokenLen, "...", 3) == 0) &&
+								(strncmp(paramBegin[i], tokenBegin, tokenLen) == 0) &&
+								/* Let's have a side effect */
+								(bIsVarArg = true)
 							)
 						)
 					{
@@ -2163,7 +2789,8 @@ static cppMacroInfo * saveMacro(hashTable *table, const char * macro)
 			ADD_CONSTANT_REPLACEMENT(begin,c - begin);
 	}
 
-	hashTablePutItem(table,eStrndup(identifierBegin,identifierEnd - identifierBegin),info);
+	info->name = eStrndup(identifierBegin,identifierEnd - identifierBegin);
+	hashTablePutItem(table,info->name,info);
 	CXX_DEBUG_LEAVE();
 
 	return info;
@@ -2182,6 +2809,7 @@ static void freeMacroInfo(cppMacroInfo * info)
 		pPart = pPart->next;
 		eFree(pPartToDelete);
 	}
+	eFree(info->name);
 	eFree(info);
 }
 
@@ -2191,7 +2819,7 @@ static hashTable *makeMacroTable (void)
 		1024,
 		hashCstrhash,
 		hashCstreq,
-		eFree,
+		NULL,					/* Keys refers values' name fields. */
 		(void (*)(void *))freeMacroInfo
 		);
 }
@@ -2210,13 +2838,14 @@ static void finalizeCpp (const langType language, bool initialized)
 	}
 }
 
-static void CpreProExpandMacrosInInput (const langType language CTAGS_ATTR_UNUSED, const char *name, const char *arg)
+static bool CpreProExpandMacrosInInput (const langType language CTAGS_ATTR_UNUSED, const char *name, const char *arg)
 {
 	doesExpandMacros = paramParserBool (arg, doesExpandMacros,
 										name, "parameter");
+	return true;
 }
 
-static void CpreProInstallIgnoreToken (const langType language CTAGS_ATTR_UNUSED, const char *optname CTAGS_ATTR_UNUSED, const char *arg)
+static bool CpreProInstallIgnoreToken (const langType language CTAGS_ATTR_UNUSED, const char *optname CTAGS_ATTR_UNUSED, const char *arg)
 {
 	if (arg == NULL || arg[0] == '\0')
 	{
@@ -2231,9 +2860,10 @@ static void CpreProInstallIgnoreToken (const langType language CTAGS_ATTR_UNUSED
 			cmdlineMacroTable = makeMacroTable ();
 		saveIgnoreToken(arg);
 	}
+	return true;
 }
 
-static void CpreProInstallMacroToken (const langType language CTAGS_ATTR_UNUSED, const char *optname CTAGS_ATTR_UNUSED, const char *arg)
+static bool CpreProInstallMacroToken (const langType language CTAGS_ATTR_UNUSED, const char *optname CTAGS_ATTR_UNUSED, const char *arg)
 {
 	if (arg == NULL || arg[0] == '\0')
 	{
@@ -2248,30 +2878,32 @@ static void CpreProInstallMacroToken (const langType language CTAGS_ATTR_UNUSED,
 			cmdlineMacroTable = makeMacroTable ();
 		saveMacro(cmdlineMacroTable, arg);
 	}
+	return true;
 }
 
-static void CpreProSetIf0 (const langType language CTAGS_ATTR_UNUSED, const char *name, const char *arg)
+static bool CpreProSetIf0 (const langType language CTAGS_ATTR_UNUSED, const char *name, const char *arg)
 {
 	doesExaminCodeWithInIf0Branch = paramParserBool (arg, doesExaminCodeWithInIf0Branch,
 													 name, "parameter");
+	return true;
 }
 
-static parameterHandlerTable CpreProParameterHandlerTable [] = {
+static paramDefinition CpreProParams [] = {
 	{ .name = "if0",
 	  .desc = "examine code within \"#if 0\" branch (true or [false])",
-	  .handleParameter = CpreProSetIf0,
+	  .handleParam = CpreProSetIf0,
 	},
 	{ .name = "ignore",
 	  .desc = "a token to be specially handled",
-	  .handleParameter = CpreProInstallIgnoreToken,
+	  .handleParam = CpreProInstallIgnoreToken,
 	},
 	{ .name = "define",
 	  .desc = "define replacement for an identifier (name(params,...)=definition)",
-	  .handleParameter = CpreProInstallMacroToken,
+	  .handleParam = CpreProInstallMacroToken,
 	},
 	{ .name = "_expand",
 	  .desc = "expand macros if their definitions are in the current C/C++/CUDA input file (true or [false])",
-	  .handleParameter = CpreProExpandMacrosInInput,
+	  .handleParam = CpreProExpandMacrosInInput,
 	}
 };
 
@@ -2287,9 +2919,23 @@ extern parserDefinition* CPreProParser (void)
 	def->fieldTable = CPreProFields;
 	def->fieldCount = ARRAY_SIZE (CPreProFields);
 
-	def->parameterHandlerTable = CpreProParameterHandlerTable;
-	def->parameterHandlerCount = ARRAY_SIZE(CpreProParameterHandlerTable);
+	def->paramTable = CpreProParams;
+	def->paramCount = ARRAY_SIZE(CpreProParams);
 
 	def->useCork = CORK_QUEUE | CORK_SYMTAB;
 	return def;
 }
+
+#ifdef DEBUG
+extern void cppDebugPutc (const int level, const int c)
+{
+	if (debug (level)  &&  c != EOF)
+	{
+		     if (c == STRING_SYMBOL)  printf ("\"string\"");
+		else if (c == CHAR_SYMBOL)    printf ("'c'");
+		else                          putchar (c);
+
+		fflush (stdout);
+	}
+}
+#endif

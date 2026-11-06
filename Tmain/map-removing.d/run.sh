@@ -3,28 +3,34 @@
 
 CTAGS=$1
 
+. ../utils.sh
+if ! ( echo 'MatLab   *.m' | grep -E '\*\.m\>.*$' > /dev/null); then
+	skip "'grep -E' needed in this case doesn't work expectedly"
+fi
+
+
 echo default map including '*.m'
 echo =======================================
 ${CTAGS} --quiet --options=NONE \
-	 --list-maps | grep '\*\.m\>.*$'
+	 --list-maps | grep -E '\*\.m\>.*$'
 echo
 
 echo '[--map-<LANG>]' removing from '*.m' from 'ObjectiveC'
 echo =======================================
 ${CTAGS} --quiet --options=NONE \
-	 --map-ObjectiveC=-.m --list-maps | grep '\*\.m\>.*$'
+	 --map-ObjectiveC=-.m --list-maps | grep -E '\*\.m\>.*$'
 echo
 
 echo '[--map-<LANG>]' adding '*.m' to 'Ada'
 echo =======================================
 ${CTAGS} --quiet --options=NONE \
-	 --map-Ada=+.m --list-maps | grep '\*\.m\>.*$'
+	 --map-Ada=+.m --list-maps | grep -E '\*\.m\>.*$'
 echo
 
 echo '[--map-<LANG>]' removing from '*.m' from 'ObjectiveC', and adding '*.m' to 'Ada'
 echo =======================================
 ${CTAGS} --quiet --options=NONE \
-	 --map-ObjectiveC=-.m --map-Ada=+.m --list-maps | grep '\*\.m\>.*$'
+	 --map-ObjectiveC=-.m --map-Ada=+.m --list-maps | grep -E '\*\.m\>.*$'
 echo
 
 echo '[--map-<LANG>]' guessing parser with adding '*.m' to 'Ada'
@@ -43,3 +49,18 @@ ${CTAGS} --quiet --options=NONE   \
 	 --guess-language-eagerly \
 	 ada.m matlab.m objc.m
 echo
+
+X=xxxyyyzzz
+echo 'Removing multi extension entries'
+${CTAGS} --quiet --options=NONE   \
+	 --map-Pascal=.$X \
+	 --map-Fortran=.$X \
+	 --langmap=C:.$X \
+	 --list-maps | grep $X
+
+echo 'Removing multi pattern entries'
+${CTAGS} --quiet --options=NONE   \
+	 --map-Pascal='('$X')' \
+	 --map-Fortran='('$X')' \
+	 --langmap=C:'('$X')' \
+	 --list-maps | grep $X

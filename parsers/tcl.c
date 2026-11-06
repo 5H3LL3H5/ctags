@@ -21,7 +21,7 @@
 #include "entry.h"
 #include "routines.h"
 #include "ptrarray.h"
-#include "tcl.h"
+#include "x-tcl.h"
 
 #include <string.h>
 
@@ -69,6 +69,7 @@ struct sCollector {
 	vString *str;
 	int depth;
 	int scopeIndex;
+	int nth;
 };
 
 /*
@@ -173,11 +174,25 @@ static void readString (vString *string)
 
 static void readIdentifier (vString *string)
 {
+	bool seen_backslash = false;
+
 	while (1)
 	{
 		int c = getcFromInputFile ();
-		if (isgraph (c) && (!strchr ("{}[]", c)))
+		if (c == EOF)
+			break;
+
+		if (c == '\\')
+		{
 			vStringPut (string, c);
+			seen_backslash = true;
+		}
+		else if (isgraph (c) &&
+				 (seen_backslash ||  (!strchr ("{}[]\"", c))))
+		{
+			vStringPut (string, c);
+			seen_backslash = false;
+		}
 		else
 		{
 			ungetcToInputFile (c);
@@ -376,23 +391,6 @@ static const char* getLastComponentInIdentifier(tokenInfo *const token)
 		return NULL;
 }
 
-static void notifyPackageRequirement (tokenInfo *const token)
-{
-	subparser *sub;
-
-	foreachSubparser (sub, false)
-	{
-		tclSubparser *tclsub = (tclSubparser *)sub;
-
-		if (tclsub->packageRequirementNotify)
-		{
-			enterSubparser(sub);
-			tclsub->packageRequirementNotify (tclsub, tokenString (token),
-											  TCL_PSTATE(token));
-			leaveSubparser();
-		}
-	}
-}
 
 static void notifyNamespaceImport (tokenInfo *const token)
 {
@@ -447,6 +445,7 @@ static void collectSignature (const tokenInfo *const token, collector * col)
 		tagEntryInfo e;
 		initTagEntry (&e, tokenString (token), K_PARAMETER);
 		e.extensionFields.scopeIndex = col->scopeIndex;
+		e.extensionFields.nth = col->nth++;
 		makeTagEntry (&e);
 	}
 	else if (tokenIsTypeVal (token, '{'))
@@ -465,13 +464,42 @@ static void collectSignature (const tokenInfo *const token, collector * col)
 	vStringCat (col->str, token->string);
 }
 
+static void tokenReadQuotedIdentifier (tokenInfo *const token)
+{
+	token->type  = TOKEN_TCL_IDENTIFIER;
+	vStringClear (token->string);
+	unsigned int depth = 1;
+	while (depth > 0)
+	{
+		int c = getcFromInputFile ();
+		switch (c)
+		{
+		case EOF:
+			return;
+		case '{':
+			depth++;
+			tokenPutc (token, c);
+			break;
+		case '}':
+			if (depth != 1)
+				tokenPutc (token, c);
+			depth--;
+			break;
+		default:
+			vStringPut (token->string, c);
+		}
+	}
+}
+
 static void parseProc (tokenInfo *const token,
-					   int parent)
+					   int parent, bool quoted)
 {
 	int index = CORK_NIL;
 	int index_fq = CORK_NIL;
-
-	tokenRead (token);
+	if (quoted)
+		tokenReadQuotedIdentifier (token);
+	else
+		tokenRead (token);
 
 	if (tokenIsType(token, TCL_IDENTIFIER))
 	{
@@ -481,8 +509,7 @@ static void parseProc (tokenInfo *const token,
 			tagEntryInfo e;
 
 			initTagEntry (&e, last, K_PROCEDURE);
-			e.lineNumber = token->lineNumber;
-			e.filePosition = token->filePosition;
+			updateTagLine (&e, token->lineNumber, token->filePosition);
 
 			int len  = (last - tokenString (token));
 			vString *ns = vStringNew();
@@ -510,6 +537,8 @@ static void parseProc (tokenInfo *const token,
 				e.extensionFields.scopeName = vStringValue (ns);
 			}
 
+			if (*e.name == '\0')
+				e.allowNullTag = 1;
 			e.skipAutoFQEmission = 1;
 			index = makeTagEntry (&e);
 
@@ -533,12 +562,22 @@ static void parseProc (tokenInfo *const token,
 		}
 		else
 		{
-			tagEntryInfo *ep;
-			index = makeSimpleTag (token->string, K_PROCEDURE);
-			ep = getEntryInCorkQueue (index);
-			if (ep)
-				ep->extensionFields.scopeIndex = parent;
+			tagEntryInfo e;
+			initTagEntry (&e, tokenString (token), K_PROCEDURE);
+			if (quoted)
+			{
+				updateTagLine(&e, token->lineNumber, token->filePosition);
+				if (vStringIsEmpty (token->string))
+					e.allowNullTag = 1;
+			}
+			e.extensionFields.scopeIndex = parent;
+			index = makeTagEntry (&e);
 		}
+	}
+	else if (!quoted && token->type == '{')
+	{
+		parseProc(token, parent, true);
+		return;
 	}
 
 	vString *signature = NULL;
@@ -561,6 +600,7 @@ static void parseProc (tokenInfo *const token,
 				.str = signature,
 				.depth = 1,
 				.scopeIndex = index,
+				.nth = 0,
 			};
 			tokenSkipOverPairFull (token, &col);
 		}
@@ -571,7 +611,7 @@ static void parseProc (tokenInfo *const token,
 	tagEntryInfo *e = getEntryInCorkQueue (index);
 	if (e)
 	{
-		e->extensionFields.endLine = token->lineNumber;
+		setTagEndLine (e, token->lineNumber);
 
 		if (signature)
 		{
@@ -583,7 +623,7 @@ static void parseProc (tokenInfo *const token,
 		if (e_fq)
 		{
 			const char *sig = e->extensionFields.signature;
-			e_fq->extensionFields.endLine = token->lineNumber;
+			setTagEndLine (e_fq, token->lineNumber);
 			if (sig)
 				e_fq->extensionFields.signature = eStrdup (sig);
 		}
@@ -643,16 +683,17 @@ static void parseNamespace (tokenInfo *const token,
 		if (tokenIsKeyword (token, NAMESPACE))
 			parseNamespace (token, index);
 		else if (tokenIsKeyword (token, PROC))
-			parseProc (token, index);
+			parseProc (token, index, false);
 		else if (tokenIsType (token, TCL_IDENTIFIER))
 		{
-			notifyCommand (token, index);
-			skipToEndOfCmdline(token); /* ??? */
+			int r = notifyCommand (token, index);
+			if (r == CORK_NIL)
+				skipToEndOfCmdline(token);
 		}
 		else if (token->type == '}')
 		{
 			if (e)
-				e->extensionFields.endLine = token->lineNumber;
+				setTagEndLine (e, token->lineNumber);
 			break;
 		}
 		else
@@ -673,12 +714,6 @@ static void parsePackage (tokenInfo *const token)
 		{
 			if (tokenString(token)[0] == '-')
 				goto next;
-
-			if (tokenIsType (token, TCL_IDENTIFIER)
-				&& (vStringLength (token->string) > 0))
-			{
-				notifyPackageRequirement (token);
-			}
 		}
 	}
 	skipToEndOfCmdline(token);
@@ -697,13 +732,14 @@ static void findTclTags (void)
 		if (tokenIsKeyword (token, NAMESPACE))
 			parseNamespace (token, CORK_NIL);
 		else if (tokenIsKeyword (token, PROC))
-			parseProc (token, CORK_NIL);
+			parseProc (token, CORK_NIL, false);
 		else if (tokenIsKeyword (token, PACKAGE))
 			parsePackage (token);
 		else if (tokenIsType (token, TCL_IDENTIFIER))
 		{
-			notifyCommand (token, CORK_NIL);
-			skipToEndOfCmdline(token); /* ??? */
+			int r = notifyCommand (token, CORK_NIL);
+			if (r == CORK_NIL)
+				skipToEndOfCmdline(token);
 		}
 		else
 			skipToEndOfCmdline(token);

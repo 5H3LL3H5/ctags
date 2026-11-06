@@ -22,6 +22,9 @@
  * MACROS
  */
 
+/* dummy definition to allow/require an extra semicolon */
+#define END_DEF(sfx) typedef int ctags_dummy_int_type_ignore_me_##sfx
+
 #define DECLARE_ALT_VALUE_FN(N)									\
 static EsObject* alt_value_##N (EsObject *args, DSLEnv *env)
 
@@ -31,7 +34,7 @@ static EsObject* alt_value_##N (EsObject *args, DSLEnv *env)			\
 	if (!env->alt_entry)												\
 		dsl_throw (NO_ALT_ENTRY, es_symbol_intern ("&" #N)); 			\
 	return dsl_entry_##N (env->alt_entry);								\
-}
+} END_DEF(alt_value_##N)
 
 
 /*
@@ -59,11 +62,14 @@ DECLARE_ALT_VALUE_FN(inherits);
 DECLARE_ALT_VALUE_FN(implementation);
 DECLARE_ALT_VALUE_FN(kind);
 DECLARE_ALT_VALUE_FN(language);
+DECLARE_ALT_VALUE_FN(nth);
 DECLARE_ALT_VALUE_FN(scope);
 DECLARE_ALT_VALUE_FN(scope_kind);
 DECLARE_ALT_VALUE_FN(scope_name);
 DECLARE_ALT_VALUE_FN(signature);
 DECLARE_ALT_VALUE_FN(typeref);
+DECLARE_ALT_VALUE_FN(typeref_kind);
+DECLARE_ALT_VALUE_FN(typeref_name);
 DECLARE_ALT_VALUE_FN(roles);
 DECLARE_ALT_VALUE_FN(xpath);
 
@@ -82,12 +88,13 @@ static DSLProcBind pbinds [] = {
 	{ "<>",              sorter_proc_cmp,          NULL, DSL_PATTR_CHECK_ARITY,     2,
 	  .helpstr = "(<> <any:a> <any:b>) -> -1|0|1; compare a b. The types of a and b must be the same." },
 	{ "*-",              sorter_proc_flip,         NULL, DSL_PATTR_CHECK_ARITY,     1,
-	  .helpstr = "(*- <interger:n>) -> -<integer:n>; filp the result of comparison." },
-	{ "<or>",            sorter_sform_cmp_or,      NULL, DSL_PATTR_CHECK_ARITY_OPT, 1,
-	  .helpstr = "(<or> <any> ...) -> -1|0|1; evaluate arguments left to right till one of thme returns -1 or 1." },
+	  .helpstr = "(*- <integer:n>) -> -<integer:n>; flip the result of comparison." },
+	{ "<or>",            sorter_sform_cmp_or,      NULL, DSL_PATTR_SELF_EVAL|DSL_PATTR_CHECK_ARITY_OPT, 1,
+	  .helpstr = "(<or> <any> ...) -> -1|0|1; evaluate arguments left to right till one of them returns -1 or 1." },
 
-	{ "&",               sorter_alt_entry_ref, NULL, DSL_PATTR_CHECK_ARITY,  1,
-	  .helpstr = "(& <string:field>) -> #f|<string>" },
+	{ "&",               sorter_alt_entry_ref, NULL, DSL_PATTR_CHECK_ARITY_OPT,  1,
+	  .helpstr = "(& <string:field>) -> <string>|#f\n"
+	  "(& <string:field> <any:default>) -> <string>|<any:default>"},
 	{ "&name",           alt_value_name,           NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> <string>"},
 	{ "&input",          alt_value_input,          NULL, DSL_PATTR_MEMORABLE, 0UL,
@@ -113,6 +120,8 @@ static DSLProcBind pbinds [] = {
 	  .helpstr = "-> #f|<string>"},
 	{ "&language",       alt_value_language,       NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> #f|<string>" },
+	{ "&nth",            alt_value_nth,            NULL, DSL_PATTR_MEMORABLE, 0UL,
+	  .helpstr = "-> #f|<integer>"},
 	{ "&scope",          alt_value_scope,          NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> #f|<string>; $scope-kind:$scope-name"},
 	{ "&scope-kind",     alt_value_scope_kind,     NULL, DSL_PATTR_MEMORABLE, 0UL,
@@ -122,6 +131,10 @@ static DSLProcBind pbinds [] = {
 	{ "&signature",      alt_value_signature,      NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> #f|<string>" },
 	{ "&typeref",        alt_value_typeref,        NULL, DSL_PATTR_MEMORABLE, 0UL,
+	  .helpstr = "-> #f|<string>"},
+	{ "&typeref-kind",   alt_value_typeref_kind,   NULL, DSL_PATTR_MEMORABLE, 0UL,
+	  .helpstr = "-> #f|<string>"},
+	{ "&typeref-name",   alt_value_typeref_name,   NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> #f|<string>"},
 	{ "&roles",          alt_value_roles,          NULL, DSL_PATTR_MEMORABLE, 0UL,
 	  .helpstr = "-> <list>" },
@@ -149,11 +162,14 @@ DEFINE_ALT_VALUE_FN(inherits);
 DEFINE_ALT_VALUE_FN(implementation);
 DEFINE_ALT_VALUE_FN(kind);
 DEFINE_ALT_VALUE_FN(language);
+DEFINE_ALT_VALUE_FN(nth);
 DEFINE_ALT_VALUE_FN(scope);
 DEFINE_ALT_VALUE_FN(scope_kind);
 DEFINE_ALT_VALUE_FN(scope_name);
 DEFINE_ALT_VALUE_FN(signature);
 DEFINE_ALT_VALUE_FN(typeref);
+DEFINE_ALT_VALUE_FN(typeref_kind);
+DEFINE_ALT_VALUE_FN(typeref_name);
 DEFINE_ALT_VALUE_FN(roles);
 DEFINE_ALT_VALUE_FN(xpath);
 
@@ -196,7 +212,17 @@ static EsObject* sorter_alt_entry_ref (EsObject *args, DSLEnv *env)
 		dsl_throw (WRONG_TYPE_ARGUMENT,
 				   es_symbol_intern ("&"));
 	else
-		return dsl_entry_xget_string (env->alt_entry, es_string_get (key));
+	{
+		EsObject *r = dsl_entry_xget_string (env->alt_entry, es_string_get (key));
+		if (es_object_equal (r, es_false))
+		{
+			EsObject *defaultv = es_car(es_cdr(args));
+			if (es_null (defaultv))
+				return r;
+			return defaultv;
+		}
+		return r;
+	}
 }
 
 static EsObject* sorter_proc_cmp (EsObject* args, DSLEnv *env)
@@ -374,7 +400,10 @@ int s_compare        (const tagEntry * a, const tagEntry * b, SCode *code)
 	dsl_cache_reset (DSL_SORTER);
 
 	if (exit_code)
+	{
+		i = 0;					/* For suppress the warning. */
 		exit (exit_code);
+	}
 
 	return i;
 }

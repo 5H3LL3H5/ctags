@@ -7,7 +7,7 @@ ctags-lang-verilog
 The man page about SystemVerilog/Verilog parser for Universal Ctags
 
 
-:Version: 5.9.0
+:Version: 6.2.0
 :Manual group: Universal Ctags
 :Manual section: 7
 
@@ -21,7 +21,7 @@ SYNOPSIS
     +===============+===============+===================+
     | SystemVerilog | SystemVerilog | .sv, .svh, svi    |
     +---------------+---------------+-------------------+
-    | Verilog       | Verilog       | .v                |
+    | Verilog       | Verilog       | .v, .vh           |
     +---------------+---------------+-------------------+
 
 DESCRIPTION
@@ -54,7 +54,8 @@ Supported Kinds
 	T       typedef    yes     no      0      NONE   type declarations
 	V       covergroup yes     no      0      NONE   covergroups
 	b       block      yes     no      0      NONE   blocks (begin, fork)
-	c       constant   yes     no      0      NONE   constants (define, parameter, specparam, enum values)
+	c       constant   yes     no      0      NONE   constants (parameter, specparam, enum values)
+	d       define     yes     no      0      NONE   text macros
 	e       event      yes     no      0      NONE   events
 	f       function   yes     no      0      NONE   functions
 	i       instance   yes     no      0      NONE   instances of module or interface
@@ -74,7 +75,8 @@ Note that ``prototype`` (``Q``) is disabled by default.
 	$ ctags --list-kinds-full=Verilog
 	#LETTER NAME     ENABLED REFONLY NROLES MASTER DESCRIPTION
 	b       block    yes     no      0      NONE   blocks (begin, fork)
-	c       constant yes     no      0      NONE   constants (define, parameter, specparam)
+	c       constant yes     no      0      NONE   constants (parameter, specparam)
+	d       define   yes     no      0      NONE   text macros
 	e       event    yes     no      0      NONE   events
 	f       function yes     no      0      NONE   functions
 	i       instance yes     no      0      NONE   instances of module
@@ -162,16 +164,47 @@ because they cannot be overridden.
 	P3	input.sv	/^	parameter  P3 = "parameter";$/;"	c	module:no_parameter_port_list	parameter:
 	L7	input.sv	/^	localparam L7 = "localparam";$/;"	c	module:no_parameter_port_list
 
+Supported Roles
+~~~~~~~~~~~~~~~
+
+.. code-block:: console
+
+	$ ./ctags --list-roles=SystemVerilog
+	#KIND(L/N) NAME ENABLED DESCRIPTION
+	m/module   decl on      declaring instances
+
+	$ ./ctags --list-roles=Verilog
+	#KIND(L/N) NAME ENABLED DESCRIPTION
+	m/module   decl on      declaring instances
+
+The parser extracts names of modules used in instance declarations as
+reference tags. ``decl`` is the role for the tags. See "TAG ENTRIES"
+section of :ref:`ctags(1) <ctags(1)>` about reference tags and roles.
+
+.. warning::
+
+   The support for references in Universal Ctags is still
+   experimental; the names of the roles may be changed in the future.
+
 TIPS
 ~~~~
 
 If you want to map files ``*.v`` to SystemVerilog, add
-``--langmap=SystemVerilog:.v`` option.
+``--map-SystemVerilog=+.v`` option.
 
 KNOWN ISSUES
 ---------------------------------------------------------------------
 
 See https://github.com/universal-ctags/ctags/issues/2674 for more information.
+
+VERSIONS
+--------
+
+Change since "0.0"
+~~~~~~~~~~~~~~~~~~
+
+* New kind ``define``
+* map ``.vh`` to Verilog
 
 SEE ALSO
 --------
@@ -179,6 +212,7 @@ SEE ALSO
 - :ref:`ctags(1) <ctags(1)>`
 - :ref:`ctags-client-tools(7) <ctags-client-tools(7)>`
 - Language Reference Manuals (LRM)
+
    - IEEE Standard for SystemVerilog — Unified Hardware Design, Specification, and
      Verification Language, IEEE Std 1800-2017,
      https://ieeexplore.ieee.org/document/8299595

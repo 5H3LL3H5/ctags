@@ -56,24 +56,27 @@ See also [Writing Documents](https://docs.ctags.io/en/latest/contributions.html#
 
 ### Markers ###
 
-- "`NOT REVIEWED YET`" means the section or block is not reviewed yet.
+- "`NOT REVIEWED YET`" (or "`BEGIN: NOT REVIEWED YET`" ... "`END: NOT REVIEWED YET`") means the section or block is not reviewed yet.
 - "`IN MAN PAGE`" means the topic is also explained in the man page of ctags.
 - "`.. TODO: ...`": TODO comments for documents.
 - "`.. TODO(code): ...`": TODO comments for programming codes.
+- "`.. TESTCASE: ...`": A test case for the feature documented is at ....
 
 ##  Generating man pages ###
 
 The files in `docs/man/` directory are generated from the man pages in `man/`
 directory. **Do not edit the files in `docs/man/` directory directly.**
 
-Execute the following command in the top directory to update them:
+Execute `make` in the top directory to update them. Or
 
 ```sh
-make -C man QUICK=1 man update-docs
+make -C man
 ```
 
+will build the man pages only.
+
 During this process, hyperlinks to man pages are added as described above, and
-delete unnecessary section markups from `docs/man/*.rst`.  See `man/Makefile`
+delete unnecessary section markups from `docs/man/*.rst`.  See `man/Makefile.am`
 for more details.
 
 To generate the man pages `rst2man` command is needed.
